@@ -624,7 +624,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div class="weather-week" id="weatherWeekHome"></div>
           </div>
           <div style="display:flex;flex-direction:column;gap:14px;">
-            <div class="card"><div class="card-title">⚙️ 车控摘要</div>
+            <div class="card" style="flex-shrink:0;"><div class="card-title">⚙️ 车控摘要</div>
               <div class="control-row"><span class="control-label">🌡️ 温度</span><div class="control-btns"><button class="btn-sm" id="tempDownH">−</button><span class="control-value" id="tempValueH">24°C</span><button class="btn-sm" id="tempUpH">+</button></div></div>
               <div class="control-row"><span class="control-label">💨 风量</span><div class="control-btns"><button class="btn-sm" id="fanDownH">−</button><span class="control-value" id="fanValueH">4</span><button class="btn-sm" id="fanUpH">+</button></div></div>
               <div class="control-divider"></div>
@@ -632,10 +632,13 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
               <div class="control-divider"></div>
               <div class="control-row"><span class="control-label">🚗 模式</span><span class="mode-badge comfort" id="driveModeBadgeH">舒适</span></div>
             </div>
-            <div class="card"><div class="card-title">🎵 正在播放</div>
-              <div class="music-info"><div class="music-cover">🎵</div><div class="music-text"><div class="music-title" id="songTitleH">晴天</div><div class="music-artist" id="songArtistH">周杰伦</div></div></div>
-              <div class="music-controls"><button class="music-btn" id="prevBtnH">⏮</button><button class="music-btn play-btn" id="playBtnH">⏯️</button><button class="music-btn" id="nextBtnH">⏭</button></div>
+            <div class="card" style="flex:1;display:flex;flex-direction:column;"><div class="card-title">🎵 正在播放</div>
+              <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
+                <div class="music-info"><div class="music-cover">🎵</div><div class="music-text"><div class="music-title" id="songTitleH">晴天</div><div class="music-artist" id="songArtistH">周杰伦</div></div></div>
+                <div class="music-controls"><button class="music-btn" id="prevBtnH">⏮</button><button class="music-btn play-btn" id="playBtnH">⏯️</button><button class="music-btn" id="nextBtnH">⏭</button></div>
+              </div>
             </div>
+          </div>
           </div>
           <div class="card"><div class="card-title">🔧 车辆监控</div>
             <div class="tire-grid">
