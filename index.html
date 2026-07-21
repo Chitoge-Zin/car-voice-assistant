@@ -208,7 +208,7 @@ body::before {
 .weather-hour .wh-temp { font-weight:600; color:var(--text-primary); }
 
 /* ==================== 首页面板 ==================== */
-.home-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; height:100%; align-content:start; }
+.home-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; height:100%; align-content:start; align-items:stretch; }
 .home-welcome {
   grid-column:1/-1; display:flex; align-items:center; justify-content:space-between;
   padding:14px 20px; background:var(--glass-bg); border:1px solid var(--glass-border); border-radius:var(--radius-sm);
@@ -613,7 +613,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
       <div class="panel active" id="panel-home">
         <div class="home-grid">
           <div class="home-welcome"><div class="greeting">下午好，<span>驾驶者</span> 👋</div><div style="font-size:11px;color:var(--text-secondary);">🔔 左后轮胎压偏低 | 📅 保养还剩 3,200 km</div></div>
-          <div class="card"><div class="card-title">🗺️ 导航快捷</div>
+          <div class="card" style="height:100%;"><div class="card-title">🗺️ 导航快捷</div>
             <div class="nav-search"><input type="text" id="navInputHome" placeholder="输入目的地..."/><button class="btn btn-primary" id="navSearchBtnHome">🔍</button></div>
             <div class="quick-dests"><span class="quick-dest" data-dest="家">🏠 家</span><span class="quick-dest" data-dest="公司">🏢 公司</span><span class="quick-dest" data-dest="充电站">⚡ 充电站</span><span class="quick-dest" data-dest="餐厅">🍽️ 餐厅</span></div>
             <div class="route-preview" id="routePreviewHome"><div style="font-size:12px;color:var(--text-secondary);">路况 <span id="routePreferenceHome" style="color:var(--primary);">高速优先</span></div><div class="route-bar"><div class="route-progress" id="routeProgressHome" style="width:35%;"></div></div><div class="route-info"><span>预计到达</span><span class="eta-value" id="etaDisplayHome">14:32</span></div></div>
@@ -623,7 +623,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div style="font-size:10px;color:var(--text-secondary);margin:6px 0 2px;">📅 明天天气</div>
             <div class="weather-week" id="weatherWeekHome"></div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:14px;">
+          <div style="display:flex;flex-direction:column;gap:14px;height:100%;">
             <div class="card" style="flex-shrink:0;"><div class="card-title">⚙️ 车控摘要</div>
               <div class="control-row"><span class="control-label">🌡️ 温度</span><div class="control-btns"><button class="btn-sm" id="tempDownH">−</button><span class="control-value" id="tempValueH">24°C</span><button class="btn-sm" id="tempUpH">+</button></div></div>
               <div class="control-row"><span class="control-label">💨 风量</span><div class="control-btns"><button class="btn-sm" id="fanDownH">−</button><span class="control-value" id="fanValueH">4</span><button class="btn-sm" id="fanUpH">+</button></div></div>
