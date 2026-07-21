@@ -2619,9 +2619,9 @@ function setIdleState() {
 
 // 后台唤醒词检测（独立 Recognition 实例，持续监听"小本"）
 function startWakeWordDetection() {
-  if (wakeRecognition) return; // 已在运行
+  if (wakeRecognition) return 'already-running';
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return;
+  if (!SR) return 'no-speech-api';
   try {
     wakeRecognition = new SR();
     wakeRecognition.lang = 'zh-CN';
@@ -2664,7 +2664,8 @@ function startWakeWordDetection() {
     };
     wakeRecognition.start();
     console.log('[唤醒] 后台唤醒词检测已启动，说"小本"唤醒');
-  } catch(e) { console.warn('[唤醒] 启动失败:', e.message); wakeRecognition = null; }
+    return 'ok';
+  } catch(e) { console.warn('[唤醒] 启动失败:', e.message); wakeRecognition = null; return 'error:' + e.message; }
 }
 
 function stopWakeWordDetection() {
@@ -5140,11 +5141,21 @@ init();
 initApiKeyUI();
 initPanelChat();
 // 启动后台识别——整个生命周期只建一次 Recognition，永不停机
-// Edge 首次 start() 会弹权限（仅一次），之后不会
 if (window.SpeechRecognition || window.webkitSpeechRecognition) {
   isAwake = false;
+  console.log('[语音] SpeechRecognition API 可用，开始初始化...');
   startMic().then(ok => {
-    if (ok) startRecognition();
+    console.log('[语音] 麦克风初始化结果:', ok);
+    if (ok) {
+      const recOk = startWakeWordDetection();
+      console.log('[语音] 唤醒词检测启动结果:', recOk);
+    } else {
+      console.warn('[语音] 麦克风权限未获取，语音功能不可用');
+      setCarStatus('需要麦克风权限','idle',false);
+    }
+  }).catch(err => {
+    console.warn('[语音] 麦克风获取异常:', err.message);
+    setCarStatus('麦克风不可用','idle',false);
   });
   setCarStatus('待命中（说"小本"唤醒）...','idle',false);
   console.log('[唤醒] 语音助手已就绪，说"小本"唤醒');
