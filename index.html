@@ -563,6 +563,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
 </style>
 </head>
 <body>
+<script>window.onerror=function(m,s,l,c,e){console.warn('[Err]',m);return true;};window.onunhandledrejection=function(e){console.warn('[Rej]',e.reason);};</script>
 
 <!-- 音乐播放器（全局 Audio 元素） -->
 <audio id="musicAudio" preload="none" style="display:none;"></audio>
@@ -2274,7 +2275,7 @@ let lastInterimText='';
 let isSpeaking = false; // TTS 播放中标志，阻止识别自己的声音
 let processingVoice = false; // 正在处理语音指令中，防止TTS自触发循环
 let lastTTSEndTime = 0; // TTS 播完的时间戳，用于冷却期判断
-const TTS_COOLDOWN = 1000; // TTS 播完后冷却 1 秒，确保扬声器回声完全消失
+const TTS_COOLDOWN = 500; // TTS 冷却 0.5 秒
 let recentTTSReplies = []; // 最近 TTS 回复文本缓存，用于过滤识别到的 TTS 回音
 const TTS_ECHO_MAX = 5; // 最多缓存几条 TTS 回复用于回音检测
 
@@ -2785,12 +2786,15 @@ function initCar3D() {
   // 默认：左前侧45°斜俯瞰，整车舒展展示
   camera.position.set(5.5, 5.5, 8); camera.lookAt(0, 0.1, 0);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference:'low-power' });
+  } catch(e) { console.warn('[3D] WebGL不可用，跳过'); return; }
   renderer.setSize(W, H);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // [性能] 限制像素比
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.setClearColor(0xF5F0EB);
   renderer.shadowMap.enabled = false;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.1;
+  try { renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0; } catch(e) {}
   car3DContainer.appendChild(renderer.domElement);
   // [移动端] 初始设置canvas不拦截触摸，仅在车况面板激活时通过CSS启用
   renderer.domElement.style.pointerEvents = 'none';
