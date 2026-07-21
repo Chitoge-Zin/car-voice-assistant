@@ -388,7 +388,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
 
 /* ==================== Toast ==================== */
 .toast-container { position:fixed; right:20px; bottom:20px; z-index:9999; display:flex; flex-direction:column-reverse; gap:6px; pointer-events:none; }
-.toast { padding:12px 20px; border-radius:10px; font-size:14px; font-weight:500; background:rgba(15,26,46,0.95); border:1px solid var(--glass-border); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); color:var(--text-primary); pointer-events:auto; animation:toast-in 0.4 ease,toast-out 0.3 ease 2.2 forwards; max-width:300px; word-break:break-word; }
+.toast { padding:12px 20px; border-radius:10px; font-size:14px; font-weight:500; background:rgba(15,26,46,0.95); border:1px solid var(--glass-border); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); color:var(--text-primary); pointer-events:auto; animation:toast-in 0.4s ease,toast-out 0.3s ease 2.2s forwards; max-width:300px; word-break:break-word; }
 .toast.success { border-left:3px solid var(--success); }
 .toast.warning { border-left:3px solid var(--warn); }
 .toast.info { border-left:3px solid var(--primary); }
@@ -439,7 +439,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
   width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--glass-border);
   background: var(--glass-hover); color: var(--text-secondary); cursor: pointer;
   font-size: 14px; display: flex; align-items: center; justify-content: center;
-  transition: all 0.15; line-height: 1;
+  transition: all 0.15s; line-height: 1;
 }
 .float-panel-close:hover { border-color: var(--danger); color: var(--danger); background: rgba(255,107,107,0.12); }
 
@@ -456,7 +456,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
 .chat-msg {
   max-width: 82%; padding: 8px 13px; border-radius: 14px;
   font-size: 13px; line-height: 1.5; word-break: break-word;
-  animation: msg-in 0.25 ease;
+  animation: msg-in 0.25s ease;
 }
 @keyframes msg-in { from{opacity:0;transform:translateY(8px);} to{opacity:1;transform:translateY(0);} }
 .chat-msg.user {
@@ -622,7 +622,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div style="font-size:10px;color:var(--text-secondary);margin:6px 0 2px;">📅 明天天气</div>
             <div class="weather-week" id="weatherWeekHome"></div>
           </div>
-          <div style="display:flex;flex-direction:column;justify-content:space-between;">
+          <div style="display:flex;flex-direction:column;gap:14px;">
             <div class="card"><div class="card-title">⚙️ 车控摘要</div>
               <div class="control-row"><span class="control-label">🌡️ 温度</span><div class="control-btns"><button class="btn-sm" id="tempDownH">−</button><span class="control-value" id="tempValueH">24°C</span><button class="btn-sm" id="tempUpH">+</button></div></div>
               <div class="control-row"><span class="control-label">💨 风量</span><div class="control-btns"><button class="btn-sm" id="fanDownH">−</button><span class="control-value" id="fanValueH">4</span><button class="btn-sm" id="fanUpH">+</button></div></div>
@@ -631,7 +631,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
               <div class="control-divider"></div>
               <div class="control-row"><span class="control-label">🚗 模式</span><span class="mode-badge comfort" id="driveModeBadgeH">舒适</span></div>
             </div>
-            <div class="card"><div class="card-title">🎵 正在播放</div>
+            <div class="card" style="flex:1;"><div class="card-title">🎵 正在播放</div>
               <div class="music-info"><div class="music-cover">🎵</div><div class="music-text"><div class="music-title" id="songTitleH">晴天</div><div class="music-artist" id="songArtistH">周杰伦</div></div></div>
               <div class="music-controls"><button class="music-btn" id="prevBtnH">⏮</button><button class="music-btn play-btn" id="playBtnH">⏯️</button><button class="music-btn" id="nextBtnH">⏭</button></div>
             </div>
@@ -3318,8 +3318,8 @@ function rand(min,max) { return Math.floor(Math.random()*(max-min+1))+min; }
 // ---- 辅助函数 ----
 function setWindow(name, val) {
   // 更新 UI 滑块
-  $$('.win-slider').forEach( => {
-    if (.dataset.window === name) { .value = val; if (.nextElementSibling) .nextElementSibling.textContent = val+'%'; }
+  $$('.win-slider').forEach(s => {
+    if (s.dataset.window === name) { s.value = val; if (s.nextElementSibling) s.nextElementSibling.textContent = val+'%'; }
   });
   // 直接更新 windowTargets（中文名 → 3D key 映射：左前→FR, 右前→FL, 左后→RR, 右后→RL）
   const WIN_TO_KEY = { '左前':'FR', '右前':'FL', '左后':'RR', '右后':'RL' };
@@ -3338,7 +3338,7 @@ function syncSunroofUI() {
   if (lbl) lbl.textContent = state.sunroofOpen ? '已开启' : '关闭';
 }
 function allWindowsTo(v) {
-  $$('.win-slider').forEach(=>{.value=v;if(.nextElementSibling).nextElementSibling.textContent=v+'%';});
+  $$('.win-slider').forEach(s=>{s.value=v;if(s.nextElementSibling)s.nextElementSibling.textContent=v+'%';});
   update3D_Windows();
 }
 
@@ -4806,8 +4806,8 @@ function parseMultiCommand(raw) {
   const SPLIT_RE = /[，,。；;、]|并且|然后|顺便|还有|同时|以及|而且|另外|接着|接下来|再[说]?|也[要]?|还要|外加|加上|附带|捎带/g;
 
   const parts = raw.split(SPLIT_RE)
-    .map( => .trim())
-    .filter( => .length > 1);
+    .map(s => s.trim())
+    .filter(s => s.length > 1);
 
   if (parts.length <= 1) {
     const single = parseVoiceCommand(raw);
