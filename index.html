@@ -616,11 +616,23 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div class="nav-search"><input type="text" id="navInputHome" placeholder="输入目的地..."/><button class="btn btn-primary" id="navSearchBtnHome">🔍</button></div>
             <div class="quick-dests"><span class="quick-dest" data-dest="家">🏠 家</span><span class="quick-dest" data-dest="公司">🏢 公司</span><span class="quick-dest" data-dest="充电站">⚡ 充电站</span><span class="quick-dest" data-dest="餐厅">🍽️ 餐厅</span></div>
             <div class="route-preview" id="routePreviewHome"><div style="font-size:12px;color:var(--text-secondary);">路况 <span id="routePreferenceHome" style="color:var(--primary);">高速优先</span></div><div class="route-bar"><div class="route-progress" id="routeProgressHome" style="width:35%;"></div></div><div class="route-info"><span>预计到达</span><span class="eta-value" id="etaDisplayHome">14:32</span></div></div>
-            <div class="weather-divider"></div>
-            <div style="font-size:10px;color:var(--text-secondary);margin-bottom:4px;">⏰ 今日时段</div>
-            <div class="weather-hours" id="weatherHoursHome"></div>
-            <div style="font-size:10px;color:var(--text-secondary);margin:6px 0 2px;">📅 明天天气</div>
-            <div class="weather-week" id="weatherWeekHome"></div>
+            <div class="control-divider"></div>
+            <div style="font-size:10px;color:var(--text-secondary);margin-bottom:6px;">📱 蓝牙设备</div>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:4px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--glass-hover);border-radius:8px;">
+                <div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--primary);font-size:14px;">📱</span><span style="font-size:11px;">iPhone 15 Pro</span></div>
+                <span style="font-size:9px;color:var(--success);">● 已连接</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--glass-hover);border-radius:8px;">
+                <div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--text-secondary);font-size:14px;">🎧</span><span style="font-size:11px;">AirPods Pro</span></div>
+                <span style="font-size:9px;color:var(--text-secondary);">未连接</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--glass-hover);border-radius:8px;">
+                <div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--text-secondary);font-size:14px;">⌚</span><span style="font-size:11px;">Apple Watch</span></div>
+                <span style="font-size:9px;color:var(--text-secondary);">未连接</span>
+              </div>
+            </div>
+            <button class="btn btn-primary" style="width:100%;font-size:10px;padding:5px;margin-top:4px;" id="bluetoothScanBtn">🔍 扫描设备</button>
           </div>
           <div style="display:flex;flex-direction:column;gap:14px;">
             <div class="card"><div class="card-title">⚙️ 车控摘要</div>
@@ -1947,10 +1959,7 @@ function renderWeather() {
   // 导航面板显示7天
   renderWeek($('#weatherWeek'), days);
   renderHours($('#weatherHours'), todayHours);
-  // 首页：只显示明天（索引1），不显示7天
-  const tomorrowOnly = days.length > 1 ? [days[1]] : [];
-  renderWeek($('#weatherWeekHome'), tomorrowOnly);
-  renderHours($('#weatherHoursHome'), todayHours);
+  // 首页天气已替换为蓝牙面板，不再渲染
   // 同步顶部状态栏天气
   const firstDay = days[0];
   const weatherEl = $('.status-weather');
@@ -5090,6 +5099,7 @@ function init() {
   });
   updatePlayPauseBtn(); renderWeather();
   fetchWeather(); // 异步获取实时天气
+  const bsBtn = $('#bluetoothScanBtn'); if (bsBtn) bsBtn.addEventListener('click', () => bluetoothScan());
   if (volS) { volS.value = state.volume; const vl = $('#volumeLabel'); if (vl) vl.textContent = state.volume; }
   if (bs) { bs.value = state.brightness; const bl = $('#brightnessLabel'); if (bl) bl.textContent = state.brightness + '%'; }
   // 同步 Audio 音量
@@ -5097,6 +5107,17 @@ function init() {
   update3D_Windows(); // 初始化 windowTargets 从滑块值
   initDashboard();
   refreshAllUI(); // 统一刷新所有面板
+}
+// 蓝牙扫描（模拟）
+function bluetoothScan() {
+  const btn = $('#bluetoothScanBtn');
+  if (!btn) return;
+  btn.textContent = '⏳ 扫描中...';
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.textContent = '✅ 扫描完成';
+    setTimeout(() => { btn.textContent = '🔍 扫描设备'; btn.disabled = false; }, 2000);
+  }, 1500);
 }
 // 对话面板消息处理
 function initPanelChat() {
