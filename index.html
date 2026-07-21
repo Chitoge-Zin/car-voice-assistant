@@ -613,7 +613,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
       <div class="panel active" id="panel-home">
         <div class="home-grid">
           <div class="home-welcome"><div class="greeting">下午好，<span>驾驶者</span> 👋</div><div style="font-size:11px;color:var(--text-secondary);">🔔 左后轮胎压偏低 | 📅 保养还剩 3,200 km</div></div>
-          <div class="card" style="height:100%;"><div class="card-title">🗺️ 导航快捷</div>
+          <div class="card"><div class="card-title">🗺️ 导航快捷</div>
             <div class="nav-search"><input type="text" id="navInputHome" placeholder="输入目的地..."/><button class="btn btn-primary" id="navSearchBtnHome">🔍</button></div>
             <div class="quick-dests"><span class="quick-dest" data-dest="家">🏠 家</span><span class="quick-dest" data-dest="公司">🏢 公司</span><span class="quick-dest" data-dest="充电站">⚡ 充电站</span><span class="quick-dest" data-dest="餐厅">🍽️ 餐厅</span></div>
             <div class="route-preview" id="routePreviewHome"><div style="font-size:12px;color:var(--text-secondary);">路况 <span id="routePreferenceHome" style="color:var(--primary);">高速优先</span></div><div class="route-bar"><div class="route-progress" id="routeProgressHome" style="width:35%;"></div></div><div class="route-info"><span>预计到达</span><span class="eta-value" id="etaDisplayHome">14:32</span></div></div>
@@ -623,7 +623,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div style="font-size:10px;color:var(--text-secondary);margin:6px 0 2px;">📅 明天天气</div>
             <div class="weather-week" id="weatherWeekHome"></div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:14px;height:100%;">
+          <div style="display:flex;flex-direction:column;gap:14px;">
             <div class="card" style="flex-shrink:0;"><div class="card-title">⚙️ 车控摘要</div>
               <div class="control-row"><span class="control-label">🌡️ 温度</span><div class="control-btns"><button class="btn-sm" id="tempDownH">−</button><span class="control-value" id="tempValueH">24°C</span><button class="btn-sm" id="tempUpH">+</button></div></div>
               <div class="control-row"><span class="control-label">💨 风量</span><div class="control-btns"><button class="btn-sm" id="fanDownH">−</button><span class="control-value" id="fanValueH">4</span><button class="btn-sm" id="fanUpH">+</button></div></div>
@@ -632,15 +632,13 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
               <div class="control-divider"></div>
               <div class="control-row"><span class="control-label">🚗 模式</span><span class="mode-badge comfort" id="driveModeBadgeH">舒适</span></div>
             </div>
-            <div class="card" style="flex:1;display:flex;flex-direction:column;"><div class="card-title">🎵 正在播放</div>
-              <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
-                <div class="music-info"><div class="music-cover">🎵</div><div class="music-text"><div class="music-title" id="songTitleH">晴天</div><div class="music-artist" id="songArtistH">周杰伦</div></div></div>
-                <div class="music-controls"><button class="music-btn" id="prevBtnH">⏮</button><button class="music-btn play-btn" id="playBtnH">⏯️</button><button class="music-btn" id="nextBtnH">⏭</button></div>
-              </div>
+            <div class="card"><div class="card-title">🎵 正在播放</div>
+              <div class="music-info"><div class="music-cover">🎵</div><div class="music-text"><div class="music-title" id="songTitleH">晴天</div><div class="music-artist" id="songArtistH">周杰伦</div></div></div>
+              <div class="music-controls"><button class="music-btn" id="prevBtnH">⏮</button><button class="music-btn play-btn" id="playBtnH">⏯️</button><button class="music-btn" id="nextBtnH">⏭</button></div>
             </div>
           </div>
           </div>
-          <div class="card" style="margin-top:-9px;"><div class="card-title">🔧 车辆监控</div>
+          <div class="card"><div class="card-title">🔧 车辆监控</div>
             <div class="tire-grid">
               <div class="tire-item"><span class="tire-dot green"></span><span class="tire-label">左前</span><span class="tire-value">2.4 bar</span></div>
               <div class="tire-item"><span class="tire-dot green"></span><span class="tire-label">右前</span><span class="tire-value">2.3 bar</span></div>
