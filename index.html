@@ -2729,7 +2729,7 @@ async function startVoiceInput() {
 }
 
 function stopVoiceInput() {
-  stopRecognition(); stopMic(); clearTimeout(silenceTimer);
+  stopRecognitionHard(); stopMic(); clearTimeout(silenceTimer);
   smRunning=false; lastInterimText=''; setIdleState();
   // 非休眠退出时重启后台唤醒检测
   if (isAwake) {
