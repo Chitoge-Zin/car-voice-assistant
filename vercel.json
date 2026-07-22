@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/asr.js": {
+      "memory": 256,
+      "maxDuration": 15
+    }
+  }
+}
