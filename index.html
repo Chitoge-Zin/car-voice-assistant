@@ -1006,11 +1006,11 @@ const GITHUB_MUSIC_FILES = [
 // 加载歌单：从 GitHub 仓库 music-list.json（优先）或内置文件名列表
 async function fetchMusicList() {
   if (musicFetchPromise) return musicFetchPromise;
-  musicFetchPromise = (async () => {
-    // 判断运行环境：GitHub Pages 还是本地
-    const isGitHubPages = location.hostname === 'chitoge-zin.github.io';
-    const BASE = isGitHubPages ? './music/' : 'https://chitoge-zin.github.io/car-voice-assistant/music/';
+  // 判断运行环境：GitHub Pages 还是本地
+  const isGitHubPages = location.hostname === 'chitoge-zin.github.io';
+  const BASE = isGitHubPages ? './music/' : 'https://chitoge-zin.github.io/car-voice-assistant/music/';
 
+  musicFetchPromise = (async () => {
     // 1) 尝试加载 music-list.json（包含歌曲名+艺术家元数据）
     try {
       const resp = await fetch('./music-list.json', { signal: AbortSignal.timeout(3000) });
@@ -1027,7 +1027,7 @@ async function fetchMusicList() {
           }));
           console.log('[Music] 从 music-list.json 加载 ' + musicList.length + ' 首');
           musicReady = true;
-          return musicFetchPromise;
+          return;  // 修复: 避免 return musicFetchPromise 导致的 Promise 循环引用
         }
       }
     } catch(e) { console.log('[Music] music-list.json 未找到，使用内置列表'); }
