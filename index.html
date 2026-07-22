@@ -620,8 +620,8 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div style="font-size:10px;color:var(--text-secondary);margin-bottom:6px;">📱 蓝牙设备</div>
             <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:4px;">
               <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--glass-hover);border-radius:8px;">
-                <div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--primary);font-size:14px;">📱</span><span style="font-size:11px;">iPhone 15 Pro</span></div>
-                <span style="font-size:9px;color:var(--success);">● 已连接</span>
+                <div style="display:flex;align-items:center;gap:6px;"><span class="bt-icon" style="color:var(--text-secondary);font-size:14px;">📱</span><span style="font-size:11px;">iPhone 15 Pro</span></div>
+                <span class="bt-status" style="font-size:9px;color:var(--text-secondary);">未连接</span>
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--glass-hover);border-radius:8px;">
                 <div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--text-secondary);font-size:14px;">🎧</span><span style="font-size:11px;">AirPods Pro</span></div>
@@ -796,6 +796,9 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
             <div class="setting-row"><span class="s-label">导航全屏</span><span class="s-value" id="navFullscreenLabel" style="cursor:pointer;color:var(--text-secondary);">关闭</span></div>
             <div class="setting-row"><span class="s-label">导航静音</span><span class="s-value" id="navMutedLabel" style="cursor:pointer;">播放中</span></div>
           </div>
+        </div>
+        <div class="card"><div class="card-title">🌤️ 天气预报</div>
+          <div class="weather-week" id="weatherWeek"></div>
         </div>
         <div class="card"><div class="card-title">📡 LBS 位置服务</div>
           <div style="font-size:11px;color:var(--text-secondary);line-height:1.8;">
@@ -1195,7 +1198,8 @@ const state = {
   rearTemp: 24, /* 后排温度 */
   rearLock: false, /* 后排锁定 */
   airOutlet: false, /* 电动出风口开关 */
-  airOutletMode: 'sweep' /* 风向: sweep/face/away/free */
+  airOutletMode: 'sweep', /* 风向: sweep/face/away/free */
+  bluetoothOn: false /* 蓝牙开关 */
 };
 
 const $ = s => document.querySelector(s);
@@ -1956,10 +1960,8 @@ function renderWeather() {
       <span class="wh-temp">${h.temp}°C</span>
     </div>`).join('');
   };
-  // 导航面板显示7天
+  // 导航面板显示7天天气预报
   renderWeek($('#weatherWeek'), days);
-  renderHours($('#weatherHours'), todayHours);
-  // 首页天气已替换为蓝牙面板，不再渲染
   // 同步顶部状态栏天气
   const firstDay = days[0];
   const weatherEl = $('.status-weather');
@@ -3445,7 +3447,7 @@ function inferPanel(text) {
   if (has('天气')||has('下雨')||has('温度')&&!has('调')&&!has('空')&&!has('°')&&!has('℃')&&!has('度')&&!has('制')&&!has('冷')&&!has('热')||has('外面')&&(has('怎么样')||has('冷')||has('热')||has('风'))||
       has('今天天气')||has('明天天气')||has('后天天气')||has('未来一周')||has('天气预报')||
       has('气温')||has('湿度')||has('风力')||has('紫外线')||has('空气质量')||has('pm2')) {
-    return 'home';
+    return 'nav';
   }
 
   // ===== 3D车况建模指令 → 车况面板 =====
@@ -3512,7 +3514,7 @@ function inferPanel(text) {
       '播放器','音量','歌单','列表','收藏','随机','循环','单曲','暂停','继续',
       '上一首','下一首','切歌','播客','电台','fm'] },
     // 系统设置类 → 设置面板
-    { panel:'settings', keys:['蓝牙','wifi','无线','网络','设置','系统','声音','语音',
+    { panel:'settings', keys:['wifi','无线','网络','设置','系统','声音','语音',
       '唤醒','发音人','语速','显示','主题','深色','浅色','暗色','亮色',
       '连接','配网','wifi热点','个人热点'] },
   ];
@@ -4303,7 +4305,21 @@ function parseVoiceCommand(raw) {
     if (has('最亮')||has('最大')) { state.brightness = 100; if(bs) bs.value = 100; const bl = $('#brightnessLabel'); if(bl) bl.textContent = '100%'; refreshAllUI(); return '屏幕已调到最亮'; }
     if (has('最暗')||has('最小')) { state.brightness = 10; if(bs) bs.value = 10; const bl = $('#brightnessLabel'); if(bl) bl.textContent = '10%'; refreshAllUI(); return '屏幕已调到最暗'; }
   }
-  if ((has('蓝牙')||has('连接手机'))&&(open()||has('打开')||has('连接')||has('设置'))) { return '蓝牙设置已打开'; }
+  // ===== 蓝牙控制 =====
+  if (has('蓝牙')||has('连接手机')) {
+    switchPanel('home');
+    if (open()||has('打开')||has('开启')||has('启动')||has('连接')) {
+      state.bluetoothOn = true;
+      updateBluetoothUI();
+      return '蓝牙已打开，iPhone 15 Pro 已连接';
+    }
+    if (close()||has('关闭')||has('断开')||has('停用')) {
+      state.bluetoothOn = false;
+      updateBluetoothUI();
+      return '蓝牙已关闭，所有设备已断开';
+    }
+    return state.bluetoothOn ? '蓝牙已连接，iPhone 15 Pro 在线' : '蓝牙已关闭，点击扫描按钮可搜索设备';
+  }
   if (has('wifi')||has('WiFi')||has('无线')||has('网络')) {
     if (has('打开')||has('开启')||has('连接')) return 'WiFi已打开';
     if (has('关闭')) return 'WiFi已关闭';
@@ -5099,6 +5115,7 @@ function init() {
   });
   updatePlayPauseBtn(); renderWeather();
   fetchWeather(); // 异步获取实时天气
+  updateBluetoothUI();
   const bsBtn = $('#bluetoothScanBtn'); if (bsBtn) bsBtn.addEventListener('click', () => bluetoothScan());
   if (volS) { volS.value = state.volume; const vl = $('#volumeLabel'); if (vl) vl.textContent = state.volume; }
   if (bs) { bs.value = state.brightness; const bl = $('#brightnessLabel'); if (bl) bl.textContent = state.brightness + '%'; }
@@ -5118,6 +5135,31 @@ function bluetoothScan() {
     btn.textContent = '✅ 扫描完成';
     setTimeout(() => { btn.textContent = '🔍 扫描设备'; btn.disabled = false; }, 2000);
   }, 1500);
+}
+// 更新蓝牙UI：顶部状态栏 + 首页蓝牙面板
+function updateBluetoothUI() {
+  // 顶部状态栏
+  const allStatusItems = document.querySelectorAll('.status-item');
+  allStatusItems.forEach(item => {
+    const label = item.querySelector('.label');
+    const value = item.querySelector('.value');
+    const dot = item.querySelector('.dot');
+    if (label && label.textContent.includes('蓝牙') && value) {
+      value.textContent = state.bluetoothOn ? '已连接' : '已关闭';
+      if (dot) dot.className = state.bluetoothOn ? 'dot blue' : 'dot red';
+    }
+  });
+  // 首页蓝牙面板：更新连接状态
+  const allCards = document.querySelectorAll('#panel-home .card');
+  allCards.forEach(card => {
+    const title = card.querySelector('.card-title');
+    if (title && title.textContent.includes('导航快捷')) {
+      const btIcon = card.querySelector('.bt-icon');
+      const btStatus = card.querySelector('.bt-status');
+      if (btIcon) btIcon.style.color = state.bluetoothOn ? 'var(--primary)' : 'var(--text-secondary)';
+      if (btStatus) btStatus.innerHTML = state.bluetoothOn ? '<span style="font-size:9px;color:var(--success);">● 已连接</span>' : '<span style="font-size:9px;color:var(--text-secondary);">未连接</span>';
+    }
+  });
 }
 // 对话面板消息处理
 function initPanelChat() {
