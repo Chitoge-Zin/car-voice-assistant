@@ -2017,8 +2017,8 @@ function playNextWithMode() {
 // ===== 进度条更新 =====
 function formatTimeStr(sec) {
   if (!sec || isNaN(sec)) return '00:00';
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
-  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  const m = Math.floor(sec / 60),  = Math.floor(sec % 60);
+  return String(m).padStart(2, '0') + ':' + String().padStart(2, '0');
 }
 
 let progressRAF = null;
@@ -3532,14 +3532,14 @@ function inferPanel(text) {
 // ========================================================================
 function parseVoiceCommand(raw) { 
   const text = raw.replace(/[，,。！!？?\s~～]+/g, '').toLowerCase();
-  const has = (s) => text.includes(s);
+  const has = () => text.includes();
   const hasRe = (re) => re.test(text);
   const open = () => has('打开')||has('开启')||has('开一')||has('开')||has('启动');
   const close = () => has('关闭')||has('关上')||has('关掉')||has('停止')||has('退出')||has('结束')||has('取消');
   const extractNum = (re) => { const m=text.match(re); return m?parseInt(m[1]):null; };
   const extractScope = () => {
     const scopes = ['主驾','驾驶','副驾','左前','右前','左后','右后','后排左','后排右','前排','后排','左侧','右侧','左边','右边','左','右','所有','全部','全车'];
-    for (const s of scopes) if (has(s)) return s;
+    for (const  of scopes) if (has()) return ;
     return null;
   };
 
