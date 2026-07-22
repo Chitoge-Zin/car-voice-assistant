@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -2273,21 +2273,35 @@ if (airOutletModeLabel) {
   });
 }
 
-// ==================== WebSocket ====================
-class VoiceWebSocket { constructor(){this.cb={};} connect(){console.log('[WS]已连接');setTimeout(()=>{if(this.cb.open)this.cb.open();},100);} sendAudio(b){console.log('[WS]音频:',b.size,'bytes');} onMessage(cb){this.cb.message=cb;} onOpen(cb){this.cb.open=cb;} }
-new VoiceWebSocket().connect();
-
-// ==================== 真实语音识别引擎 (STT + 可视化 + TTS) ====================
+// ==================== 语音识别引擎 (智谱 GLM-ASR-2512) ====================
 let audioCtx=null, analyser=null, mediaStream=null, audioAnimId=null;
-let persistentMediaStream = null; // 持久化麦克风流，避免重复弹权限
-let recognition=null, smRunning=false, silenceTimer=null;
+let persistentMediaStream = null;
+let smRunning=false;
 let lastInterimText='';
-let isSpeaking = false; // TTS 播放中标志，阻止识别自己的声音
-let processingVoice = false; // 正在处理语音指令中，防止TTS自触发循环
-let lastTTSEndTime = 0; // TTS 播完的时间戳，用于冷却期判断
-const TTS_COOLDOWN = 1000; // TTS 播完后冷却 1 秒，确保扬声器回声完全消失
-let recentTTSReplies = []; // 最近 TTS 回复文本缓存，用于过滤识别到的 TTS 回音
-const TTS_ECHO_MAX = 5; // 最多缓存几条 TTS 回复用于回音检测
+let isSpeaking = false;
+let processingVoice = false;
+let lastTTSEndTime = 0;
+const TTS_COOLDOWN = 1000;
+let recentTTSReplies = [];
+const TTS_ECHO_MAX = 5;
+
+// ---- 智谱 ASR API ----
+const ASR_API = 'https://open.bigmodel.cn/api/paas/v4/audio/transcriptions';
+let mediaRecorder = null, asrChunks = [], asrRecording = false;
+let asrDetectInterval = null;
+const ASR_SILENCE_MS = 1500;
+let asrLastSoundTime = 0;
+
+// ---- 智谱 ASR 相关 ----
+const ASR_API = 'https://open.bigmodel.cn/api/paas/v4/audio/transcriptions';
+let mediaRecorder = null;
+let asrChunks = [];
+let asrSilenceTimer = null;
+let asrRecording = false;
+const ASR_SILENCE_MS = 1500; // 1.5秒无声就发送识别
+let asrLastSoundTime = 0;
+let asrDetectInterval = null;
+const ASR_DETECT_MS = 200; // 每200ms检测一次音量
 
 // ---- 硬件级麦克风静音：TTS 播放期间彻底切断音频输入，从根本上杜绝回声环路 ----
 function muteMic() {
@@ -2313,7 +2327,6 @@ function unmuteMic() {
 // 语音唤醒词相关
 let isAwake = false;                  // 是否处于唤醒状态
 let wakeTimeout = null;               // 自动休眠定时器
-let wakeRecognition = null;           // 后台唤醒词检测实例
 const WAKE_WORD = '小本';              // 唤醒词
 const AUTO_SLEEP_DELAY = 30000;       // 30秒无操作自动休眠
 
@@ -2381,139 +2394,150 @@ function stopMic() {
   getBars().forEach(b=>b.style.height='0px');
 }
 
-// ---- 语音识别 (STT) ----
-function startRecognition() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { toast('您的浏览器不支持语音识别，请使用 Chrome/Edge', 'error'); return false; }
+// ---- 语音识别 (智谱 GLM-ASR-2512) ----
+async function startRecognition() {
+  if (!mediaStream || !mediaStream.active) {
+    console.warn('[ASR] 无麦克风流');
+    return false;
+  }
   try {
-    // 持久化单例：仅首次创建 Recognition，后续只 stop/start，避免每次新建触发权限弹窗
-    if (recognition) {
-      try { recognition.start(); } catch(e) {}
-      return true;
-    }
-    recognition = new SR();
-    recognition.lang = 'zh-CN';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    recognition.onresult = (event) => {
-      // TTS 播放期间、正在处理指令时、或 TTS 刚结束冷却期内忽略识别结果
+    // 创建 MediaRecorder
+    asrChunks = [];
+    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' });
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) asrChunks.push(e.data);
+    };
+    mediaRecorder.onstop = async () => {
+      if (asrChunks.length === 0) return;
+      const blob = new Blob(asrChunks, { type: 'audio/webm' });
+      asrChunks = [];
+      // TTS 冷却期 / 正在说话时不处理
       if (isSpeaking || processingVoice) return;
       if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) return;
-      clearTimeout(silenceTimer);
-      let finalText = '', interimText = '', finalConf = 0;
-      for (let i=event.resultIndex; i<event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) { finalText += r[0].transcript; finalConf = r[0].confidence; }
-        else { interimText += r[0].transcript; }
-      }
-      // 休眠态：只检测唤醒词
-      if (!isAwake) {
-        const full = (finalText + interimText).toLowerCase();
-        if (full.includes('小本')) {
-          console.log('[唤醒] 检测到唤醒词');
-          startVoiceInput();
+      await processASR(blob);
+    };
+    mediaRecorder.start(200); // 每200ms收集一次数据
+    asrRecording = true;
+
+    // 启动音量检测：持续监听从 analyser 获取音量
+    if (!analyser) { console.warn('[ASR] analyser 未初始化'); return false; }
+    asrLastSoundTime = Date.now();
+    asrDetectInterval = setInterval(() => {
+      if (!asrRecording) return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const avg = sum / data.length;
+      if (avg > 5) {
+        // 有声音：更新时间戳 + 显示给用户
+        asrLastSoundTime = Date.now();
+        if (isAwake && smRunning) {
+          setCarStatus('正在聆听...', 'listening', true);
         }
-        return;
       }
-      // 活跃态：正常语音指令处理
-      if (interimText) {
-        lastInterimText = interimText;
-        setCarStatus('聆听中: '+interimText, 'listening', true);
-      }
-      if (finalText.trim()) {
-        lastInterimText = '';
-        const text = finalText.trim();
-        // 过滤噪音：太短或置信度过低的结果直接丢弃
-        if (text.length < 2) { console.log('[STT] 文本过短忽略:', text); return; }
-        if (finalConf > 0 && finalConf < 0.6) { console.log('[STT] 置信度过低忽略:', text, finalConf); return; }
-        // 回音过滤：识别结果与最近 TTS 回复高度相似则丢弃（麦克风听到了扬声器的声音）
-        const isEcho = recentTTSReplies.some(reply => {
-          if (text.length < 5) return false;
-          const shortReply = reply.replace(/[，。！？~,\.!?\s]+/g, '').slice(0, Math.min(reply.length, text.length + 2));
-          const shortText = text.replace(/[，。！？~,\.!?\s]+/g, '');
-          if (shortReply.length > 0 && shortText.length > 0) {
-            const ratio = (shortReply.includes(shortText) || shortText.includes(shortReply))
-              ? Math.min(shortText.length, shortReply.length) / Math.max(shortText.length, shortReply.length)
-              : 0;
-            if (ratio > 0.4) { console.log('[STT] TTS回音忽略:', text, '≈', reply.slice(0, 20)); return true; }
+      // 无声超过阈值 → 停止录音并发送
+      const silentFor = Date.now() - asrLastSoundTime;
+      if (silentFor > ASR_SILENCE_MS && asrRecording && asrChunks.length > 0) {
+        try {
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+            asrRecording = false;
           }
-          return false;
-        });
-        if (isEcho) return;
-        // 防重入：同一句话只处理一次
-        if (processingVoice) return;
-        processingVoice = true;
-        setCarStatus('"'+text+'"', 'thinking');
-        processRecognizedText(text);
+        } catch(e) {}
       }
-      resetSilenceTimer();
-    };
-    recognition.onerror = (event) => {
-      if (event.error === 'not-allowed') {
-        console.warn('[STT] 权限被拒绝，停止重试');
-        recognition = null;
-        smRunning = false;
-        setIdleState();
-        return;
-      }
-    };
-    let recOnendCount = 0;
-    recognition.onend = () => {
-      recOnendCount++;
-      if (recOnendCount > 5) { recognition = null; smRunning = false; return; }
-      const cooldownRemaining = lastTTSEndTime > 0 ? TTS_COOLDOWN - (Date.now() - lastTTSEndTime) : 0;
-      const restartDelay = Math.max(500, cooldownRemaining + 200);
-      if (recognition && !isSpeaking && !processingVoice && smRunning) {
-        setTimeout(() => {
-          if (recognition && !isSpeaking && !processingVoice && smRunning) {
-            try { recognition.start(); recOnendCount = 0; } catch(e) { recognition = null; }
-          }
-        }, restartDelay);
-      }
-    };
-    recognition.start();
+    }, 200);
+
     return true;
-  } catch(e) { console.warn('[STT] 启动失败:', e.message); return false; }
+  } catch(e) {
+    console.warn('[ASR] 启动失败:', e.message);
+    return false;
+  }
 }
 
-// 恢复语音识别（TTS 播放完毕后调用，带冷却延迟）
-// ★ 先取消麦克风静音，等待冷却期过后再重启识别
-function resumeRecognition() {
-  const delay = TTS_COOLDOWN;
-  setTimeout(() => {
-    // 仅当没有新的 TTS 正在播放时才恢复麦克风和识别
-    if (!isSpeaking && !processingVoice) {
-      unmuteMic();
-      startRecognition();
-      // 如果处于休眠态，也恢复后台唤醒词检测
-      if (!isAwake && !smRunning && !wakeRecognition) {
-        startWakeWordDetection();
-      }
+async function processASR(blob) {
+  if (!hasApiKey()) {
+    console.warn('[ASR] 无 API Key，跳过识别');
+    return;
+  }
+  try {
+    setCarStatus('识别中...', 'thinking');
+    const form = new FormData();
+    form.append('file', blob, 'audio.webm');
+    form.append('model', 'glm-asr-2512');
+    form.append('language', 'zh');
+    const resp = await fetch(ASR_API, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + GLM_API_KEY },
+      body: form
+    });
+    if (!resp.ok) {
+      console.warn('[ASR] HTTP', resp.status);
+      return;
     }
-  }, delay);
-}
-
-// 彻底中止语音识别（abort + 销毁实例），防止已排队的回调继续触发
-function stopRecognitionHard() {
-  if (recognition) {
-    try { recognition.abort(); } catch(e) {}
-    recognition = null;
+    const result = await resp.json();
+    const text = (result.text || '').trim();
+    console.log('[ASR] 识别结果:', text);
+    if (!text || text.length < 1) return;
+    // 休眠态：只检测唤醒词
+    if (!isAwake) {
+      if (text.includes('小本')) {
+        console.log('[唤醒] 检测到唤醒词');
+        startVoiceInput();
+      }
+      return;
+    }
+    // 回音过滤
+    const isEcho = recentTTSReplies.some(reply => {
+      if (text.length < 5) return false;
+      const shortReply = reply.replace(/[，。！？~,\.!?\s]+/g, '').slice(0, Math.min(reply.length, text.length + 2));
+      const shortText = text.replace(/[，。！？~,\.!?\s]+/g, '');
+      if (shortReply.length > 0 && shortText.length > 0) {
+        const ratio = (shortReply.includes(shortText) || shortText.includes(shortReply))
+          ? Math.min(shortText.length, shortReply.length) / Math.max(shortText.length, shortReply.length) : 0;
+        if (ratio > 0.4) { console.log('[ASR] TTS回音忽略:', text); return true; }
+      }
+      return false;
+    });
+    if (isEcho) return;
+    if (processingVoice) return;
+    processingVoice = true;
+    setCarStatus('"'+text+'"', 'thinking');
+    processRecognizedText(text);
+  } catch(e) {
+    console.warn('[ASR] 请求失败:', e.message);
   }
 }
 
 function stopRecognition() {
-  clearTimeout(silenceTimer);
-  if (recognition) {
-    try { recognition.stop(); } catch(e) {}
-    // 不再设为 null，保留实例下次复用
+  if (asrDetectInterval) { clearInterval(asrDetectInterval); asrDetectInterval = null; }
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    try { mediaRecorder.stop(); } catch(e) {}
   }
+  asrRecording = false;
+  asrChunks = [];
+  mediaRecorder = null;
 }
 
+// 恢复语音识别（TTS 播放完毕后调用，带冷却延迟）
+function resumeRecognition() {
+  setTimeout(() => {
+    if (!isSpeaking && !processingVoice) {
+      unmuteMic();
+      startRecognition();
+    }
+  }, TTS_COOLDOWN);
+}
+
+// 彻底中止语音识别 + 录音
+function stopRecognitionHard() {
+  stopRecognition();
+}
+
+// stopRecognition defined above (ASR version)
+
 function resetSilenceTimer() {
-  // 不再自动超时关闭——recognition 始终运行，避免反复 start 触发权限弹窗
-  // 用户说"退下"或"关闭语音"时才手动停止
-  clearTimeout(silenceTimer);
+  // ASR 模式下由音量检测自动触发识别，无需手动超时
 }
 
 // ---- 统一输入处理 (语音/对话共用) ----
@@ -2629,63 +2653,19 @@ function setIdleState() {
 
 // ---- 语音输入控制 ----
 
-// 后台唤醒词检测（独立 Recognition 实例，持续监听"小本"）
+// 后台唤醒词检测（智谱 ASR 持续监听，检测"小本"后自动进入活跃态）
 function startWakeWordDetection() {
-  if (wakeRecognition) return; // 已在运行
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return;
-  try {
-    wakeRecognition = new SR();
-    wakeRecognition.lang = 'zh-CN';
-    wakeRecognition.continuous = true;
-    wakeRecognition.interimResults = true;
-    wakeRecognition.maxAlternatives = 1;
-    wakeRecognition.onresult = (event) => {
-      // TTS 播放期间忽略识别结果
-      if (isSpeaking || processingVoice) return;
-      if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) return;
-      let text = '', conf = 0;
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) { text += r[0].transcript; conf = r[0].confidence; }
-      }
-      // 过滤噪音：唤醒词检测也要最低置信度
-      if (text.length < 2) return;
-      if (conf > 0 && conf < 0.6) return;
-      if (text.includes(WAKE_WORD)) {
-        console.log('[唤醒] 检测到唤醒词:', text, 'conf:', conf);
-        stopWakeWordDetection();
-        startVoiceInput();
-      }
-    };
-    wakeRecognition.onerror = (event) => {
-      if (event.error === 'not-allowed') {
-        wakeRecognition = null;
-        return;
-      }
-    };
-    let wakeOnendCount = 0;
-    wakeRecognition.onend = () => {
-      wakeOnendCount++;
-      if (wakeOnendCount > 5) { wakeRecognition = null; return; }
-      if (wakeRecognition && !isAwake && !smRunning && !recognition && !isSpeaking && !processingVoice) {
-        setTimeout(() => {
-          if (wakeRecognition && !isAwake && !smRunning && !recognition) {
-            try { wakeRecognition.start(); wakeOnendCount = 0; } catch(e) { wakeRecognition = null; }
-          }
-        }, 600);
-      }
-    };
-    wakeRecognition.start();
-    console.log('[唤醒] 后台唤醒词检测已启动，说"小本"唤醒');
-  } catch(e) { console.warn('[唤醒] 启动失败:', e.message); wakeRecognition = null; }
+  if (asrRecording) return; // 已在录音
+  if (!isAwake && !smRunning) {
+    // 休眠态：启动麦克风 + ASR 持续监听（仅检测唤醒词）
+    startMic().then(ok => {
+      if (ok) startRecognition();
+    });
+  }
 }
 
 function stopWakeWordDetection() {
-  if (wakeRecognition) {
-    try { wakeRecognition.stop(); } catch(e) {}
-    // 保留实例复用
-  }
+  stopRecognition();
 }
 
 // 重置自动休眠计时器
@@ -2706,32 +2686,28 @@ function resetWakeTimer() {
 
 async function startVoiceInput() {
   if (smRunning) return;
-  // ★ 防止 TTS 播放期间手动唤醒导致回声环路
   if (isSpeaking || processingVoice) {
     toast('助手正在说话，请稍候...', 'warning');
     return;
   }
-  // 确保麦克风未静音（TTS 播放期间会被静音）
   unmuteMic();
   isSpeaking = false;
   processingVoice = false;
   isAwake = true;
   smRunning = true;
   const ok = await startMic(); if (!ok) { smRunning = false; return; }
-  const recOk = startRecognition(); if (!recOk) { stopMic(); smRunning = false; return; }
+  const recOk = await startRecognition(); if (!recOk) { stopMic(); smRunning = false; return; }
   lastInterimText='';
   state.voiceStatus='listening'; setCarStatus('正在聆听...','listening');
   if (micBtn) micBtn.classList.add('listening');
   if (micRipple) micRipple.classList.add('active');
   resetSilenceTimer();
-  // 如果是从休眠唤醒，toast一下
-  if (!smRunning) { toast('语音助手已唤醒，请说话...', 'info'); }
+  console.log('[语音] 已唤醒，正在聆听...');
 }
 
 function stopVoiceInput() {
-  stopRecognitionHard(); stopMic(); clearTimeout(silenceTimer);
+  stopRecognitionHard(); stopMic();
   smRunning=false; lastInterimText=''; setIdleState();
-  // 非休眠退出时重启后台唤醒检测
   if (isAwake) {
     resetWakeTimer();
   } else {
@@ -5202,20 +5178,16 @@ initFloatPanels();
 init();
 initApiKeyUI();
 initPanelChat();
-// 启动后台识别——整个生命周期只建一次 Recognition，永不停机
-// Edge 首次 start() 会弹权限（仅一次），之后不会
-if (window.SpeechRecognition || window.webkitSpeechRecognition) {
-  isAwake = false;
-  startMic().then(ok => {
-    if (ok) startRecognition();
-  });
-  setCarStatus('待命中（说"小本"唤醒）...','idle',false);
-  console.log('[唤醒] 语音助手已就绪，说"小本"唤醒');
-}
+// 初始化语音识别（智谱 GLM-ASR-2512）
+// 页面加载后提示用户点击麦克风授权并开始语音（需要用户手势）
+isAwake = false;
+setCarStatus('点击麦克风开始语音','idle',false);
+toast('点击🎤开启语音助手（首次需授权麦克风）', 'info');
+console.log('[ASR] 语音助手已就绪，点击麦克风开始');
 
-console.log(' 智能车载语音助手 v5.9 已就绪');
+console.log(' 智能车载语音助手 v6.0 已就绪（智谱 ASR）');
 console.log('  菜单: 首页|导航|仪表盘|车控|车况(3D)|娱乐|设置');
-console.log('   v5.9: 全部面板语音+对话双控 | 方向盘加热/自动空调指令 | directID UI刷新 | refreshAllUI全覆盖');
+console.log('   v6.0: 智谱GLM-ASR-2512语音识别 + 全部面板语音+对话双控 | 方向盘加热/自动空调指令 | directID UI刷新 | refreshAllUI全覆盖');
 </script>
 
 <!-- ==================== 浮动对话面板 (右下角) ==================== -->
