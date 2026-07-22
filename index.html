@@ -137,7 +137,7 @@ body::before {
 .sidebar-mic .mic-btn:hover { box-shadow: 0 0 24px rgba(0,212,255,0.3); }
 .sidebar-mic .mic-btn:active { transform: scale(0.9); }
 .sidebar-mic .mic-btn.listening {
-  animation: mic-pulse 1 infinite;
+  animation: mic-pulse 1s infinite;
   box-shadow: 0 0 24px rgba(255,107,107,0.4); background: radial-gradient(circle, #3a1a1a, #2d0f0f);
 }
 @keyframes mic-pulse { 0%,100%{box-shadow:0 0 14px rgba(255,107,107,0.3);} 50%{box-shadow:0 0 32px rgba(255,107,107,0.55);} }
@@ -1456,21 +1456,21 @@ async function playNextTTS() {
     const voiceKey = state.voicePerson || 'default';
     const voiceType = TTS_VOICE_MAP[voiceKey] || TTS_VOICE_MAP['default'];
     const blob = await callTTS_API(text, voiceType);
-    const url = 网站.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
 
     if (!ttsAudioEl) {
       ttsAudioEl = new Audio();
       ttsAudioEl.onended = () => {
         lastTTSEndTime = Date.now();
         isSpeaking = false; processingVoice = false;
-        网站.revokeObjectURL(ttsAudioEl.src);
+        URL.revokeObjectURL(ttsAudioEl.src);
         resumeRecognition();
         playNextTTS();
       };
       ttsAudioEl.onerror = () => {
         lastTTSEndTime = Date.now();
         isSpeaking = false; processingVoice = false;
-        try { 网站.revokeObjectURL(ttsAudioEl.src); } catch(e) {}
+        try { URL.revokeObjectURL(ttsAudioEl.src); } catch(e) {}
         resumeRecognition();
         playNextTTS();
       };
@@ -5113,7 +5113,7 @@ function initDashboard() {
   $$('#dashAmbientColors .color-swatch').forEach(sw => {
     sw.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      $$('#dashAmbientColors .color-swatch, #ambientColors .color-swatch, #settingsAmbientColors .color-swatch').forEach( => .classList.remove('active'));
+      $$('#dashAmbientColors .color-swatch, #ambientColors .color-swatch, #settingsAmbientColors .color-swatch').forEach(s => s.classList.remove('active'));
       sw.classList.add('active');
       state.ambientColor = sw.dataset.color;
       document.documentElement.style.setProperty('--primary', state.ambientColor);
