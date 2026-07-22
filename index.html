@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1027,7 +1027,7 @@ async function fetchMusicList() {
           }));
           console.log('[Music] 从 music-list.json 加载 ' + musicList.length + ' 首');
           musicReady = true;
-          return musicFetchPromise;
+          return;
         }
       }
     } catch(e) { console.log('[Music] music-list.json 未找到，使用内置列表'); }
@@ -2450,22 +2450,24 @@ function startRecognition() {
       resetSilenceTimer();
     };
     recognition.onerror = (event) => {
-      // 静默处理——避免每次报错弹 toast 骚扰用户
       if (event.error === 'not-allowed') {
-        console.warn('[STT] 权限被拒绝，将在5s后重试');
-        setTimeout(() => { if (recognition) { try { recognition.start(); } catch(e) {} } }, 5000);
+        console.warn('[STT] 权限被拒绝，停止重试');
+        recognition = null;
+        smRunning = false;
+        setIdleState();
+        return;
       }
-      // no-speech / aborted 是正常现象，忽略
     };
+    let recOnendCount = 0;
     recognition.onend = () => {
-      // 延迟重启，避免 tight loop（Edge 有时会不断 onend→start→onend）
-      // TTS 播完后需要额外冷却，防止重启后捕获 TTS 回音
+      recOnendCount++;
+      if (recOnendCount > 5) { recognition = null; smRunning = false; return; }
       const cooldownRemaining = lastTTSEndTime > 0 ? TTS_COOLDOWN - (Date.now() - lastTTSEndTime) : 0;
-      const restartDelay = Math.max(300, cooldownRemaining + 100);
-      if (recognition) {
+      const restartDelay = Math.max(500, cooldownRemaining + 200);
+      if (recognition && !isSpeaking && !processingVoice && smRunning) {
         setTimeout(() => {
-          if (recognition && !isSpeaking && !processingVoice) {
-            try { recognition.start(); } catch(e) {}
+          if (recognition && !isSpeaking && !processingVoice && smRunning) {
+            try { recognition.start(); recOnendCount = 0; } catch(e) { recognition = null; }
           }
         }, restartDelay);
       }
@@ -2657,19 +2659,21 @@ function startWakeWordDetection() {
       }
     };
     wakeRecognition.onerror = (event) => {
-      if (event.error === 'not-allowed') { stopWakeWordDetection(); }
-      else if (event.error === 'aborted') { /* 正常中断 */ }
+      if (event.error === 'not-allowed') {
+        wakeRecognition = null;
+        return;
+      }
     };
+    let wakeOnendCount = 0;
     wakeRecognition.onend = () => {
-      // 非主动停止则延迟自动重启（TTS 冷却期内额外延长延迟）
-      const cooldownRemaining = lastTTSEndTime > 0 ? TTS_COOLDOWN - (Date.now() - lastTTSEndTime) : 0;
-      const restartDelay = Math.max(300, cooldownRemaining + 100);
-      if (wakeRecognition && !isAwake && !smRunning && !isSpeaking && !processingVoice) {
+      wakeOnendCount++;
+      if (wakeOnendCount > 5) { wakeRecognition = null; return; }
+      if (wakeRecognition && !isAwake && !smRunning && !recognition && !isSpeaking && !processingVoice) {
         setTimeout(() => {
-          if (wakeRecognition && !isAwake && !smRunning) {
-            try { wakeRecognition.start(); } catch(e) { wakeRecognition = null; }
+          if (wakeRecognition && !isAwake && !smRunning && !recognition) {
+            try { wakeRecognition.start(); wakeOnendCount = 0; } catch(e) { wakeRecognition = null; }
           }
-        }, restartDelay);
+        }, 600);
       }
     };
     wakeRecognition.start();
