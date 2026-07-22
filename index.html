@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1027,7 +1027,7 @@ async function fetchMusicList() {
           }));
           console.log('[Music] 从 music-list.json 加载 ' + musicList.length + ' 首');
           musicReady = true;
-          return;
+          return musicFetchPromise;
         }
       }
     } catch(e) { console.log('[Music] music-list.json 未找到，使用内置列表'); }
@@ -1450,7 +1450,7 @@ async function playNextTTS() {
 
   muteMic();
   stopRecognition();
-  if (wakeRecognition) { stopWakeWordDetection(); }
+  // wakeRecognition 已移除，单例识别统一管理（无需额外停止后台检测）
 
   try {
     const voiceKey = state.voicePerson || 'default';
@@ -2274,49 +2274,50 @@ if (airOutletModeLabel) {
 }
 
 // ==================== WebSocket ====================
-class VoiceWebSocket { constructor(){this.cb={};} connect(){console.log('[WS]已连接');setTimeout(()=>{if(this.cb.open)this.cb.open();},100);} sendAudio(b){console.log('[WS]音频:',b.size,'bytes');} onMessage(cb){this.cb.message=cb;} onOpen(cb){this.cb.open=cb;} }
-new VoiceWebSocket().connect();
-
 // ==================== 真实语音识别引擎 (STT + 可视化 + TTS) ====================
-let audioCtx=null, analyser=null, mediaStream=null, audioAnimId=null;
-let persistentMediaStream = null; // 持久化麦克风流，避免重复弹权限
-let recognition=null, smRunning=false, silenceTimer=null;
-let lastInterimText='';
-let isSpeaking = false; // TTS 播放中标志，阻止识别自己的声音
-let processingVoice = false; // 正在处理语音指令中，防止TTS自触发循环
-let lastTTSEndTime = 0; // TTS 播完的时间戳，用于冷却期判断
-const TTS_COOLDOWN = 1000; // TTS 播完后冷却 1 秒，确保扬声器回声完全消失
-let recentTTSReplies = []; // 最近 TTS 回复文本缓存，用于过滤识别到的 TTS 回音
-const TTS_ECHO_MAX = 5; // 最多缓存几条 TTS 回复用于回音检测
+// v6.0 重构：单例识别 + 状态机 + 全面错误恢复
 
-// ---- 硬件级麦克风静音：TTS 播放期间彻底切断音频输入，从根本上杜绝回声环路 ----
+// ---- 核心状态 ----
+let audioCtx=null, analyser=null, mediaStream=null, audioAnimId=null;
+let recognition=null;         // 唯一识别实例（单例，整个生命周期只创建一次）
+let smRunning=false;          // 语音助手是否运行中
+let silenceTimer=null;
+let lastInterimText='';
+let isSpeaking = false;       // TTS 播放中标志
+let processingVoice = false;  // 正在处理语音指令中
+let lastTTSEndTime = 0;
+const TTS_COOLDOWN = 1200;    // TTS 播完后冷却 1.2 秒，防止回声误识别
+let recentTTSReplies = [];    // 最近 TTS 回复缓存，用于回音检测
+const TTS_ECHO_MAX = 5;
+
+// ---- 状态机 ----
+// IDLE → WAKE_LISTENING → ACTIVE_LISTENING → PROCESSING → SPEAKING → WAKE_LISTENING
+const VS_IDLE = 'idle';
+const VS_WAKE = 'wake_listening';       // 后台监听唤醒词
+const VS_ACTIVE = 'active_listening';   // 活跃聆听语音指令
+const VS_PROCESSING = 'processing';     // 处理中
+const VS_SPEAKING = 'speaking';         // TTS 播报中
+let voiceState = VS_IDLE;
+let isAwake = false;
+let wakeTimeout = null;
+const WAKE_WORD = '小本';
+const AUTO_SLEEP_DELAY = 30000;         // 30秒无操作自动休眠
+
+// ---- 麦克风硬件级静音：TTS 播放期间切断音频，杜绝回声环路 ----
 function muteMic() {
-  // 禁用持久化流的所有音轨，使浏览器不再接收任何麦克风数据
-  if (persistentMediaStream && persistentMediaStream.active) {
-    persistentMediaStream.getTracks().forEach(t => { t.enabled = false; });
-  }
-  if (mediaStream && mediaStream.active && mediaStream !== persistentMediaStream) {
+  if (mediaStream && mediaStream.active) {
     mediaStream.getTracks().forEach(t => { t.enabled = false; });
   }
   console.log('[MIC] 麦克风已静音（TTS 播放期间）');
 }
 function unmuteMic() {
-  // 重新启用音轨，恢复麦克风输入
-  if (persistentMediaStream && persistentMediaStream.active) {
-    persistentMediaStream.getTracks().forEach(t => { t.enabled = true; });
-  }
-  if (mediaStream && mediaStream.active && mediaStream !== persistentMediaStream) {
+  if (mediaStream && mediaStream.active) {
     mediaStream.getTracks().forEach(t => { t.enabled = true; });
   }
   console.log('[MIC] 麦克风已恢复');
 }
-// 语音唤醒词相关
-let isAwake = false;                  // 是否处于唤醒状态
-let wakeTimeout = null;               // 自动休眠定时器
-let wakeRecognition = null;           // 后台唤醒词检测实例
-const WAKE_WORD = '小本';              // 唤醒词
-const AUTO_SLEEP_DELAY = 30000;       // 30秒无操作自动休眠
 
+// ---- UI 元素 ----
 const micBtn=$('#micBtn'), micRipple=$('#micRipple'), barsCont=$('#audioBars');
 const BAR_N=12;
 if (barsCont) { barsCont.innerHTML=''; for(let i=0;i<BAR_N;i++){ const b=document.createElement('div'); b.className='audio-bar'; b.style.height='0px'; barsCont.appendChild(b); } }
@@ -2325,39 +2326,45 @@ function getBars(){ return barsCont?barsCont.querySelectorAll('.audio-bar'):[]; 
 // ---- 麦克风 + 可视化 ----
 async function startMic() {
   try {
-    // 复用已有的活跃流，避免重复弹权限
-    if (persistentMediaStream && persistentMediaStream.active) {
-      mediaStream = persistentMediaStream;
-      // 重新启用所有轨道
+    // 复用已有流，避免重复弹权限
+    if (mediaStream && mediaStream.active) {
       mediaStream.getTracks().forEach(t => t.enabled = true);
     } else {
-      mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
-      persistentMediaStream = mediaStream; // 持久化保存
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
     }
     // 复用或创建 AudioContext
     if (!audioCtx || audioCtx.state === 'closed') {
       audioCtx = new (window.AudioContext||window.webkitAudioContext)();
     }
     if (audioCtx.state === 'suspended') { await audioCtx.resume(); }
-    if (!analyser) {
+    // 创建分析器（仅用于可视化频谱）
+    if (!analyser && audioCtx.state === 'running') {
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.7;
-      audioCtx.createMediaStreamSource(mediaStream).connect(analyser);
+      const src = audioCtx.createMediaStreamSource(mediaStream);
+      src.connect(analyser);
     }
-    const data = new Uint8Array(analyser.frequencyBinCount), bars = getBars();
-    function draw() {
-      audioAnimId=requestAnimationFrame(draw);
-      analyser.getByteFrequencyData(data);
-      const step = Math.floor(data.length / BAR_N);
-      for (let i=0; i<BAR_N && i<bars.length; i++) {
-        let sum=0, count=0;
-        for (let j=i*step; j<(i+1)*step && j<data.length; j++) { sum+=data[j]; count++; }
-        const avg = count ? sum/count : 0;
-        bars[i].style.height = Math.max(1, Math.min(30, avg/5))+'px';
+    // 启动频谱可视化
+    if (analyser) {
+      const data = new Uint8Array(analyser.frequencyBinCount), bars = getBars();
+      function draw() {
+        if (!analyser) return;
+        audioAnimId=requestAnimationFrame(draw);
+        analyser.getByteFrequencyData(data);
+        const step = Math.floor(data.length / BAR_N);
+        for (let i=0; i<BAR_N && i<bars.length; i++) {
+          let sum=0, count=0;
+          for (let j=i*step; j<(i+1)*step && j<data.length; j++) { sum+=data[j]; count++; }
+          const avg = count ? sum/count : 0;
+          bars[i].style.height = Math.max(1, Math.min(30, avg/5))+'px';
+        }
       }
+      draw();
     }
-    draw(); return true;
+    return true;
   } catch(e) {
     console.warn('麦克风未授权:', e.message);
     const warnEl = document.getElementById('httpsWarning');
@@ -2369,136 +2376,159 @@ async function startMic() {
 
 function stopMic() {
   if (audioAnimId) { cancelAnimationFrame(audioAnimId); audioAnimId=null; }
-  // 仅禁用轨道而非停止，保留权限不释放硬件（再次启用无需弹窗）
-  if (mediaStream) { mediaStream.getTracks().forEach(t => t.enabled = false); mediaStream = null; }
-  // 同时禁用持久化流，防止 TTS 冷却期后 unmuteMic 意外恢复麦克风
-  if (persistentMediaStream && persistentMediaStream.active) {
-    persistentMediaStream.getTracks().forEach(t => t.enabled = false);
-  }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.enabled = false); }
   // 挂起 AudioContext 而非关闭，保持可复用
   if (audioCtx && audioCtx.state === 'running') { audioCtx.suspend().catch(()=>{}); }
   analyser = null;
   getBars().forEach(b=>b.style.height='0px');
 }
 
-// ---- 语音识别 (STT) ----
+// ---- 字符串相似度辅助（回音检测） ----
+function _isSimilarText(a, b) {
+  if (!a || !b) return false;
+  const ca = a.replace(/[，。！？~,\.!?\s]+/g, '');
+  const cb = b.replace(/[，。！？~,\.!?\s]+/g, '');
+  if (ca.length < 2 || cb.length < 2) return false;
+  if (cb.includes(ca) || ca.includes(cb)) return true;
+  let common = 0;
+  const minLen = Math.min(ca.length, cb.length);
+  for (let i = 0; i < minLen; i++) { if (ca[i] === cb[i]) common++; }
+  return (common / Math.max(ca.length, cb.length)) > 0.6;
+}
+
+// ---- 语音识别 (STT) —— 单例，状态机驱动，健壮错误恢复 ----
+function _createRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+
+  const rec = new SR();
+  rec.lang = 'zh-CN';
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+
+  let errorStreak = 0;
+  const MAX_ERROR_STREAK = 10;
+
+  rec.onresult = (event) => {
+    // TTS 播放期间、正在处理指令时、或冷却期内忽略识别结果
+    if (isSpeaking || processingVoice) return;
+    if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) return;
+
+    clearTimeout(silenceTimer);
+    let finalText = '', interimText = '', finalConf = 0;
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) { finalText += r[0].transcript; finalConf = Math.max(finalConf, r[0].confidence); }
+      else { interimText += r[0].transcript; }
+    }
+
+    // ===== 休眠态：只检测唤醒词 =====
+    if (!isAwake) {
+      const full = (finalText + interimText).toLowerCase();
+      if (full.includes(WAKE_WORD)) {
+        console.log('[唤醒] 检测到唤醒词:', full);
+        wakeUpAssistant();
+      }
+      return;
+    }
+
+    // ===== 活跃态：正常语音指令处理 =====
+    if (interimText) {
+      lastInterimText = interimText;
+      setCarStatus('聆听中: '+interimText, 'listening', true);
+    }
+    if (finalText.trim()) {
+      lastInterimText = '';
+      const text = finalText.trim();
+      // 过滤噪音
+      if (text.length < 2) { console.log('[STT] 文本过短忽略:', text); return; }
+      if (finalConf > 0 && finalConf < 0.5) { console.log('[STT] 置信度过低忽略:', text, finalConf); return; }
+      // 回音过滤
+      const isEcho = recentTTSReplies.some(reply => _isSimilarText(text, reply));
+      if (isEcho) { console.log('[STT] TTS回音忽略:', text.slice(0,30)); return; }
+      // 防重入
+      if (processingVoice) return;
+      processingVoice = true;
+      voiceState = VS_PROCESSING;
+      setCarStatus('"'+text+'"', 'thinking');
+      processRecognizedText(text);
+    }
+    resetSilenceTimer();
+  };
+
+  rec.onerror = (event) => {
+    console.warn('[STT] 识别错误:', event.error, event.message);
+    if (event.error === 'not-allowed') {
+      console.warn('[STT] 权限被拒绝，停止识别');
+      recognition = null; smRunning = false; isAwake = false;
+      voiceState = VS_IDLE; setIdleState();
+      return;
+    }
+    if (event.error === 'aborted') return; // 主动中止，正常流程
+    // 其他错误：'no-speech', 'audio-capture', 'network', 'service-not-allowed', 'bad-grammar', 'language-not-supported'
+    errorStreak++;
+    if (errorStreak > MAX_ERROR_STREAK) {
+      console.warn('[STT] 连续错误过多('+errorStreak+')，停止识别');
+      recognition = null; smRunning = false; isAwake = false;
+      voiceState = VS_IDLE; setIdleState();
+    }
+  };
+
+  rec.onend = () => {
+    console.log('[STT] onend, voiceState='+voiceState+' errorStreak='+errorStreak);
+    // 不应继续运行的情况
+    if (!recognition || !smRunning) { console.log('[STT] 不应运行，不重启'); return; }
+    // TTS 播放中或处理中时不自重启（resumeRecognition 会在完成后重启）
+    if (isSpeaking || processingVoice) { console.log('[STT] TTS/处理中，等待恢复'); return; }
+
+    const cooldownRemaining = lastTTSEndTime > 0 ? TTS_COOLDOWN - (Date.now() - lastTTSEndTime) : 0;
+    const restartDelay = Math.max(300, cooldownRemaining + 100);
+
+    setTimeout(() => {
+      if (!recognition || !smRunning) return;
+      if (isSpeaking || processingVoice) return;
+      try {
+        recognition.start();
+        errorStreak = 0;
+        console.log('[STT] 识别已自动重启');
+      } catch(e) {
+        console.warn('[STT] 自动重启失败:', e.message);
+        if (e.name === 'InvalidStateError') {
+          // 实例状态异常，销毁后重建
+          try { recognition.abort(); } catch(_){}
+          recognition = _createRecognition();
+          if (recognition) {
+            try { recognition.start(); errorStreak = 0; } catch(e2) { recognition = null; }
+          }
+        } else {
+          recognition = null;
+        }
+      }
+    }, restartDelay);
+  };
+
+  return rec;
+}
+
 function startRecognition() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { toast('您的浏览器不支持语音识别，请使用 Chrome/Edge', 'error'); return false; }
   try {
-    // 持久化单例：仅首次创建 Recognition，后续只 stop/start，避免每次新建触发权限弹窗
+    // 如果已有实例且正在运行，不重复启动
     if (recognition) {
-      try { recognition.start(); } catch(e) {}
+      try { recognition.start(); } catch(e) { /* 可能已在运行 */ }
       return true;
     }
-    recognition = new SR();
-    recognition.lang = 'zh-CN';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    recognition.onresult = (event) => {
-      // TTS 播放期间、正在处理指令时、或 TTS 刚结束冷却期内忽略识别结果
-      if (isSpeaking || processingVoice) return;
-      if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) return;
-      clearTimeout(silenceTimer);
-      let finalText = '', interimText = '', finalConf = 0;
-      for (let i=event.resultIndex; i<event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) { finalText += r[0].transcript; finalConf = r[0].confidence; }
-        else { interimText += r[0].transcript; }
-      }
-      // 休眠态：只检测唤醒词
-      if (!isAwake) {
-        const full = (finalText + interimText).toLowerCase();
-        if (full.includes('小本')) {
-          console.log('[唤醒] 检测到唤醒词');
-          startVoiceInput();
-        }
-        return;
-      }
-      // 活跃态：正常语音指令处理
-      if (interimText) {
-        lastInterimText = interimText;
-        setCarStatus('聆听中: '+interimText, 'listening', true);
-      }
-      if (finalText.trim()) {
-        lastInterimText = '';
-        const text = finalText.trim();
-        // 过滤噪音：太短或置信度过低的结果直接丢弃
-        if (text.length < 2) { console.log('[STT] 文本过短忽略:', text); return; }
-        if (finalConf > 0 && finalConf < 0.6) { console.log('[STT] 置信度过低忽略:', text, finalConf); return; }
-        // 回音过滤：识别结果与最近 TTS 回复高度相似则丢弃（麦克风听到了扬声器的声音）
-        const isEcho = recentTTSReplies.some(reply => {
-          if (text.length < 5) return false;
-          const shortReply = reply.replace(/[，。！？~,\.!?\s]+/g, '').slice(0, Math.min(reply.length, text.length + 2));
-          const shortText = text.replace(/[，。！？~,\.!?\s]+/g, '');
-          if (shortReply.length > 0 && shortText.length > 0) {
-            const ratio = (shortReply.includes(shortText) || shortText.includes(shortReply))
-              ? Math.min(shortText.length, shortReply.length) / Math.max(shortText.length, shortReply.length)
-              : 0;
-            if (ratio > 0.4) { console.log('[STT] TTS回音忽略:', text, '≈', reply.slice(0, 20)); return true; }
-          }
-          return false;
-        });
-        if (isEcho) return;
-        // 防重入：同一句话只处理一次
-        if (processingVoice) return;
-        processingVoice = true;
-        setCarStatus('"'+text+'"', 'thinking');
-        processRecognizedText(text);
-      }
-      resetSilenceTimer();
-    };
-    recognition.onerror = (event) => {
-      if (event.error === 'not-allowed') {
-        console.warn('[STT] 权限被拒绝，停止重试');
-        recognition = null;
-        smRunning = false;
-        setIdleState();
-        return;
-      }
-    };
-    let recOnendCount = 0;
-    recognition.onend = () => {
-      recOnendCount++;
-      if (recOnendCount > 5) { recognition = null; smRunning = false; return; }
-      const cooldownRemaining = lastTTSEndTime > 0 ? TTS_COOLDOWN - (Date.now() - lastTTSEndTime) : 0;
-      const restartDelay = Math.max(500, cooldownRemaining + 200);
-      if (recognition && !isSpeaking && !processingVoice && smRunning) {
-        setTimeout(() => {
-          if (recognition && !isSpeaking && !processingVoice && smRunning) {
-            try { recognition.start(); recOnendCount = 0; } catch(e) { recognition = null; }
-          }
-        }, restartDelay);
-      }
-    };
+    recognition = _createRecognition();
+    if (!recognition) return false;
     recognition.start();
+    console.log('[STT] 语音识别已启动');
     return true;
-  } catch(e) { console.warn('[STT] 启动失败:', e.message); return false; }
-}
-
-// 恢复语音识别（TTS 播放完毕后调用，带冷却延迟）
-// ★ 先取消麦克风静音，等待冷却期过后再重启识别
-function resumeRecognition() {
-  const delay = TTS_COOLDOWN;
-  setTimeout(() => {
-    // 仅当没有新的 TTS 正在播放时才恢复麦克风和识别
-    if (!isSpeaking && !processingVoice) {
-      unmuteMic();
-      startRecognition();
-      // 如果处于休眠态，也恢复后台唤醒词检测
-      if (!isAwake && !smRunning && !wakeRecognition) {
-        startWakeWordDetection();
-      }
-    }
-  }, delay);
-}
-
-// 彻底中止语音识别（abort + 销毁实例），防止已排队的回调继续触发
-function stopRecognitionHard() {
-  if (recognition) {
-    try { recognition.abort(); } catch(e) {}
+  } catch(e) {
+    console.warn('[STT] 启动失败:', e.message);
     recognition = null;
+    return false;
   }
 }
 
@@ -2506,13 +2536,71 @@ function stopRecognition() {
   clearTimeout(silenceTimer);
   if (recognition) {
     try { recognition.stop(); } catch(e) {}
-    // 不再设为 null，保留实例下次复用
+    // 不设为 null，保留实例下次复用
+  }
+}
+
+function destroyRecognition() {
+  if (recognition) {
+    try { recognition.abort(); } catch(e) {}
+    recognition = null;
+  }
+  clearTimeout(silenceTimer);
+}
+
+// ---- 语音助手生命周期 ----
+async function wakeUpAssistant() {
+  if (isAwake) return;
+  if (isSpeaking || processingVoice) {
+    console.log('[唤醒] TTS播放中，延迟唤醒');
+    return;
+  }
+  console.log('[唤醒] 助手被唤醒');
+
+  // 确保麦克风和识别就绪
+  if (!mediaStream || !mediaStream.active) {
+    const ok = await startMic();
+    if (!ok) return;
+  }
+  unmuteMic();
+  if (!recognition) {
+    const ok = startRecognition();
+    if (!ok) return;
+  }
+
+  isAwake = true;
+  smRunning = true;
+  voiceState = VS_ACTIVE;
+  setCarStatus('正在聆听...', 'listening');
+  if (micBtn) micBtn.classList.add('listening');
+  if (micRipple) micRipple.classList.add('active');
+  resetWakeTimer();
+  toast('语音助手已唤醒，请说话...', 'info');
+}
+
+function sleepAssistant() {
+  if (!isAwake) return;
+  console.log('[唤醒] 助手进入休眠');
+  isAwake = false;
+  voiceState = smRunning ? VS_WAKE : VS_IDLE;
+  clearTimeout(wakeTimeout);
+  if (micBtn) micBtn.classList.remove('listening');
+  if (micRipple) micRipple.classList.remove('active');
+  setIdleState();
+  toast('语音助手已休眠，说"小本"重新唤醒', 'info');
+}
+
+function resetWakeTimer() {
+  clearTimeout(wakeTimeout);
+  if (isAwake) {
+    wakeTimeout = setTimeout(() => {
+      console.log('[唤醒] 长时间无操作，自动休眠');
+      sleepAssistant();
+    }, AUTO_SLEEP_DELAY);
   }
 }
 
 function resetSilenceTimer() {
-  // 不再自动超时关闭——recognition 始终运行，避免反复 start 触发权限弹窗
-  // 用户说"退下"或"关闭语音"时才手动停止
   clearTimeout(silenceTimer);
 }
 
@@ -2597,164 +2685,147 @@ async function handleUserInput(text, source) {
   return fallback;
 }
 
-// ---- 语音识别结果处理 ----
+// ---- 语音识别结果处理 (async 包装，错误隔离) ----
 function processRecognizedText(text) {
-  handleUserInput(text, 'voice').then(() => resetWakeTimer());
+  handleUserInput(text, 'voice')
+    .then(() => {
+      resetWakeTimer();
+      // 安全兜底：如果 TTS 未能正常重置 processingVoice（例如 handleUserInput 提前返回），
+      // 3 秒后强制恢复，防止语音识别永久卡死
+      setTimeout(() => {
+        if (processingVoice && !isSpeaking) {
+          console.warn('[STT] processingVoice 超时未重置，强制恢复');
+          processingVoice = false;
+          setIdleState();
+        }
+      }, 3000);
+    })
+    .catch(e => {
+      console.error('[STT] 处理语音输入异常:', e);
+      processingVoice = false;
+      resetWakeTimer();
+      setIdleState();
+    });
 }
 
+// ---- TTS 等待（轮询检查直到 TTS 播放完毕） ----
 function waitForTTS(cb, timeoutMs=15000) {
   let elapsed = 0;
+  let resolved = false;
   const check = () => {
+    if (resolved) return;
     const synth = window.speechSynthesis;
     const stillPlaying = (synth && synth.speaking) || isSpeaking;
     elapsed += 100;
     if (elapsed > timeoutMs) {
-      // 超时兜底：强制重置状态
+      resolved = true;
+      console.warn('[TTS] 等待超时，强制重置');
       isSpeaking = false; processingVoice = false;
       if (synth) { try { synth.cancel(); } catch(e) {} }
-      setTimeout(cb, 100);
+      setTimeout(cb, 50);
       return;
     }
-    if (stillPlaying) { setTimeout(check, 100); } else { setTimeout(cb, 100); }
+    if (stillPlaying) { setTimeout(check, 100); } else { resolved = true; setTimeout(cb, 50); }
   };
   setTimeout(check, 150);
 }
 
+// ---- 恢复语音识别（TTS 播放完毕后调用，带冷却延迟） ----
+function resumeRecognition() {
+  const delay = TTS_COOLDOWN;
+  setTimeout(() => {
+    if (!isSpeaking && !processingVoice) {
+      unmuteMic();
+      // 如果识别实例在 TTS 期间被销毁了，重新创建
+      if (!recognition && smRunning) {
+        startRecognition();
+      }
+      // 确保状态正确
+      if (!isAwake && smRunning) {
+        voiceState = VS_WAKE;
+      }
+    }
+  }, delay);
+}
+
 function setIdleState() {
-  state.voiceStatus='idle';
-  setCarStatus('待命中（说"小本"唤醒）...','idle',false);
+  const statusText = isAwake ? '正在聆听...' : '待命中（说"小本"唤醒）...';
+  voiceState = isAwake ? VS_ACTIVE : (smRunning ? VS_WAKE : VS_IDLE);
+  setCarStatus(statusText, 'idle', false);
   if (micBtn) micBtn.classList.remove('listening');
   if (micRipple) micRipple.classList.remove('active');
 }
 
 // ---- 语音输入控制 ----
-
-// 后台唤醒词检测（独立 Recognition 实例，持续监听"小本"）
-function startWakeWordDetection() {
-  if (wakeRecognition) return; // 已在运行
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return;
-  try {
-    wakeRecognition = new SR();
-    wakeRecognition.lang = 'zh-CN';
-    wakeRecognition.continuous = true;
-    wakeRecognition.interimResults = true;
-    wakeRecognition.maxAlternatives = 1;
-    wakeRecognition.onresult = (event) => {
-      // TTS 播放期间忽略识别结果
-      if (isSpeaking || processingVoice) return;
-      if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) return;
-      let text = '', conf = 0;
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) { text += r[0].transcript; conf = r[0].confidence; }
-      }
-      // 过滤噪音：唤醒词检测也要最低置信度
-      if (text.length < 2) return;
-      if (conf > 0 && conf < 0.6) return;
-      if (text.includes(WAKE_WORD)) {
-        console.log('[唤醒] 检测到唤醒词:', text, 'conf:', conf);
-        stopWakeWordDetection();
-        startVoiceInput();
-      }
-    };
-    wakeRecognition.onerror = (event) => {
-      if (event.error === 'not-allowed') {
-        wakeRecognition = null;
-        return;
-      }
-    };
-    let wakeOnendCount = 0;
-    wakeRecognition.onend = () => {
-      wakeOnendCount++;
-      if (wakeOnendCount > 5) { wakeRecognition = null; return; }
-      if (wakeRecognition && !isAwake && !smRunning && !recognition && !isSpeaking && !processingVoice) {
-        setTimeout(() => {
-          if (wakeRecognition && !isAwake && !smRunning && !recognition) {
-            try { wakeRecognition.start(); wakeOnendCount = 0; } catch(e) { wakeRecognition = null; }
-          }
-        }, 600);
-      }
-    };
-    wakeRecognition.start();
-    console.log('[唤醒] 后台唤醒词检测已启动，说"小本"唤醒');
-  } catch(e) { console.warn('[唤醒] 启动失败:', e.message); wakeRecognition = null; }
-}
-
-function stopWakeWordDetection() {
-  if (wakeRecognition) {
-    try { wakeRecognition.stop(); } catch(e) {}
-    // 保留实例复用
-  }
-}
-
-// 重置自动休眠计时器
-function resetWakeTimer() {
-  clearTimeout(wakeTimeout);
-  if (isAwake) {
-    wakeTimeout = setTimeout(() => {
-      console.log('[唤醒] 长时间无操作，自动休眠');
-      isAwake = false;
-      // 不停止 recognition，仅改状态——避免 Edge 重复弹权限
-      if (micBtn) micBtn.classList.remove('listening');
-      if (micRipple) micRipple.classList.remove('active');
-      setIdleState();
-      toast('语音助手已休眠，说"小本"重新唤醒', 'info');
-    }, AUTO_SLEEP_DELAY);
-  }
-}
-
 async function startVoiceInput() {
-  if (smRunning) return;
-  // ★ 防止 TTS 播放期间手动唤醒导致回声环路
+  if (smRunning && isAwake) return; // 已在活跃状态
+
+  // 防止 TTS 播放期间手动唤醒导致回声环路
   if (isSpeaking || processingVoice) {
     toast('助手正在说话，请稍候...', 'warning');
     return;
   }
-  // 确保麦克风未静音（TTS 播放期间会被静音）
+
+  // 确保麦克风未静音
+  if (!mediaStream || !mediaStream.active) {
+    const ok = await startMic();
+    if (!ok) { smRunning = false; return; }
+  }
   unmuteMic();
   isSpeaking = false;
   processingVoice = false;
+
+  // 确保识别实例存在
+  if (!recognition) {
+    const ok = startRecognition();
+    if (!ok) { stopMic(); smRunning = false; return; }
+  }
+
   isAwake = true;
   smRunning = true;
-  const ok = await startMic(); if (!ok) { smRunning = false; return; }
-  const recOk = startRecognition(); if (!recOk) { stopMic(); smRunning = false; return; }
-  lastInterimText='';
-  state.voiceStatus='listening'; setCarStatus('正在聆听...','listening');
+  voiceState = VS_ACTIVE;
+  lastInterimText = '';
+  setCarStatus('正在聆听...', 'listening');
   if (micBtn) micBtn.classList.add('listening');
   if (micRipple) micRipple.classList.add('active');
-  resetSilenceTimer();
-  // 如果是从休眠唤醒，toast一下
-  if (!smRunning) { toast('语音助手已唤醒，请说话...', 'info'); }
+  resetWakeTimer();
 }
 
 function stopVoiceInput() {
-  stopRecognition(); stopMic(); clearTimeout(silenceTimer);
-  smRunning=false; lastInterimText=''; setIdleState();
-  // 非休眠退出时重启后台唤醒检测
-  if (isAwake) {
-    resetWakeTimer();
-  } else {
-    startWakeWordDetection();
-  }
+  stopRecognition();
+  stopMic();
+  clearTimeout(silenceTimer);
+  clearTimeout(wakeTimeout);
+  smRunning = false;
+  isAwake = false;
+  voiceState = VS_IDLE;
+  lastInterimText = '';
+  setIdleState();
 }
 
 function toggleVoiceInput(e) {
-  e.preventDefault();
-  if (smRunning) {
-    stopVoiceInput(); toast('语音助手已关闭', 'info');
-    isAwake = false; clearTimeout(wakeTimeout);
-    startWakeWordDetection();
-    setCarStatus('待命中（说"小本"唤醒）...', 'idle', false);
+  if (e) e.preventDefault();
+  if (smRunning && isAwake) {
+    // 活跃状态 → 休眠
+    sleepAssistant();
+  } else if (smRunning && !isAwake) {
+    // 休眠状态 → 唤醒
+    wakeUpAssistant();
   } else {
-    isAwake = true;
-    stopWakeWordDetection();
-    startVoiceInput();
+    // 完全关闭 → 启动
+    startVoiceInput().catch(e => {
+      console.error('[Voice] 启动异常:', e);
+      smRunning = false;
+      isAwake = false;
+      setIdleState();
+    });
   }
 }
 
 if (micBtn) { micBtn.addEventListener('pointerdown', toggleVoiceInput); }
 
+// ---- 无唤醒词的后台检测已移除（单例识别统一处理），保留空函数兼容旧调用 ----
+// 所有唤醒逻辑由 recognition.onresult 中的状态机统一处理
 function setCarStatus(text, glow, active=true) {
   const st=$('#carstatusStatus'), ov=$('#carstatusOverlay');
   if (st){st.textContent=text;st.classList.toggle('active',active);}
@@ -4379,7 +4450,7 @@ function parseVoiceCommand(raw) {
 
   // ===== 唤醒词响应 =====
   if (has('小本')) {
-    if (!isAwake) { isAwake = true; stopWakeWordDetection(); resetWakeTimer(); setCarStatus('正在聆听...','listening'); }
+    if (!isAwake) { wakeUpAssistant(); }
     return '我在！有什么可以帮您的？';
   }
   // ===== 15. 帮助/身份 =====
@@ -5202,20 +5273,47 @@ initFloatPanels();
 init();
 initApiKeyUI();
 initPanelChat();
-// 启动后台识别——整个生命周期只建一次 Recognition，永不停机
-// Edge 首次 start() 会弹权限（仅一次），之后不会
-if (window.SpeechRecognition || window.webkitSpeechRecognition) {
-  isAwake = false;
-  startMic().then(ok => {
-    if (ok) startRecognition();
-  });
-  setCarStatus('待命中（说"小本"唤醒）...','idle',false);
-  console.log('[唤醒] 语音助手已就绪，说"小本"唤醒');
-}
 
-console.log(' 智能车载语音助手 v5.9 已就绪');
+// ===== v6.0 语音助手初始化：单例识别 + 状态机 =====
+// 策略：初始化麦克风和识别，默认进入"休眠监听唤醒词"状态
+// 用户说"小本"唤醒，说"退下/再见/关闭语音"休眠
+(async function initVoiceAssistant() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    console.log('[Voice] 浏览器不支持语音识别，语音功能不可用');
+    setCarStatus('语音功能不可用（请使用 Chrome/Edge）', 'idle', false);
+    return;
+  }
+  try {
+    // 初始化麦克风
+    const micOk = await startMic();
+    if (!micOk) {
+      console.warn('[Voice] 麦克风初始化失败，语音功能不可用');
+      setCarStatus('麦克风未授权，语音功能不可用', 'idle', false);
+      return;
+    }
+    // 启动识别（单例，永久复用）
+    const recOk = startRecognition();
+    if (!recOk) {
+      console.warn('[Voice] 语音识别启动失败');
+      setCarStatus('语音识别启动失败', 'idle', false);
+      return;
+    }
+    // 初始状态：休眠监听唤醒词
+    isAwake = false;
+    smRunning = true;
+    voiceState = VS_WAKE;
+    setCarStatus('待命中（说"小本"唤醒）...', 'idle', false);
+    console.log('[Voice] v6.0 语音助手已就绪 — 说"小本"唤醒');
+  } catch (e) {
+    console.error('[Voice] 初始化异常:', e);
+    setCarStatus('语音初始化失败，请刷新重试', 'idle', false);
+  }
+})();
+
+console.log(' 智能车载语音助手 v6.0 已就绪');
 console.log('  菜单: 首页|导航|仪表盘|车控|车况(3D)|娱乐|设置');
-console.log('   v5.9: 全部面板语音+对话双控 | 方向盘加热/自动空调指令 | directID UI刷新 | refreshAllUI全覆盖');
+console.log('  v6.0: 单例识别引擎 | 状态机驱动 | 防崩溃 | 防回声环路');
 </script>
 
 <!-- ==================== 浮动对话面板 (右下角) ==================== -->
