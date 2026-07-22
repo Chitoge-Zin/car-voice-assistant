@@ -372,9 +372,12 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:16px;
 .carstatus-overlay.thinking { opacity:0.6; background:radial-gradient(ellipse, rgba(255,217,61,0.3), transparent); animation:glow-pulse 0.6s infinite; }
 .carstatus-overlay.speaking { opacity:0.55; background:radial-gradient(ellipse, rgba(0,212,255,0.28), transparent); animation:glow-wave 0.8s infinite; }
 .carstatus-overlay.executing { opacity:0.6; background:radial-gradient(ellipse, rgba(107,203,119,0.3), transparent); animation:glow-blink 0.3s infinite; }
+.carstatus-overlay.wake { opacity:0.45; background:radial-gradient(ellipse, rgba(0,212,255,0.22), transparent); animation:glow-breath 2s infinite; }
+.carstatus-overlay.danger { opacity:0.55; background:radial-gradient(ellipse, rgba(255,107,107,0.3), transparent); }
 @keyframes glow-pulse { 0%,100%{transform:translateX(-50%) scale(1);} 50%{transform:translateX(-50%) scale(1.05);} }
 @keyframes glow-wave { 0%{transform:translateX(-50%) scale(1);} 25%{transform:translateX(-50%) scale(1.04);} 50%{transform:translateX(-50%) scale(1.09);} 75%{transform:translateX(-50%) scale(1.03);} 100%{transform:translateX(-50%) scale(1);} }
 @keyframes glow-blink { 0%,100%{opacity:0.4;} 50%{opacity:0.8;} }
+@keyframes glow-breath { 0%,100%{opacity:0.35; transform:translateX(-50%) scale(1);} 50%{opacity:0.55; transform:translateX(-50%) scale(1.06);} }
 .carstatus-status {
   position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
   font-size:14px; color:var(--text-secondary); z-index:801;
@@ -1006,11 +1009,11 @@ const GITHUB_MUSIC_FILES = [
 // 加载歌单：从 GitHub 仓库 music-list.json（优先）或内置文件名列表
 async function fetchMusicList() {
   if (musicFetchPromise) return musicFetchPromise;
-  // 判断运行环境：GitHub Pages 还是本地
-  const isGitHubPages = location.hostname === 'chitoge-zin.github.io';
-  const BASE = isGitHubPages ? './music/' : 'https://chitoge-zin.github.io/car-voice-assistant/music/';
-
   musicFetchPromise = (async () => {
+    // 判断运行环境：GitHub Pages 还是本地
+    const isGitHubPages = location.hostname === 'chitoge-zin.github.io';
+    const BASE = isGitHubPages ? './music/' : 'https://chitoge-zin.github.io/car-voice-assistant/music/';
+
     // 1) 尝试加载 music-list.json（包含歌曲名+艺术家元数据）
     try {
       const resp = await fetch('./music-list.json', { signal: AbortSignal.timeout(3000) });
@@ -1027,7 +1030,7 @@ async function fetchMusicList() {
           }));
           console.log('[Music] 从 music-list.json 加载 ' + musicList.length + ' 首');
           musicReady = true;
-          return;  // 修复: 避免 return musicFetchPromise 导致的 Promise 循环引用
+          return;
         }
       }
     } catch(e) { console.log('[Music] music-list.json 未找到，使用内置列表'); }
@@ -1401,41 +1404,57 @@ async function speakText(text) {
 }
 
 async function callTTS_API(text, voiceType) {
-  const headers = {
-    'X-AUTH-UID': TTS_AUTH.uid,
-    'X-AUTH-TOKEN': TTS_AUTH.token,
-    'Content-Type': 'application/json',
-    'X-Api-Resource-Id': 'seed-tts-2.0'
-  };
-  const body = JSON.stringify({
-    speaker: voiceType,
-    text: text,
-    audio_format: 'mp3',
-    sample_rate: 24000,
-    uid: TTS_AUTH.uid
-  });
-  const resp = await fetch(TTS_API, { method: 'POST', headers, body });
-  if (!resp.ok) throw new Error('TTS HTTP ' + resp.status);
-  // 响应是 JSON lines 流格式，每行一个 base64 音频帧
-  const raw = await resp.text();
-  const lines = raw.trim().split('\n');
-  const audioChunks = [];
-  for (const line of lines) {
-    try {
-      const frame = JSON.parse(line);
-      if (frame.audio) {
-        const bytes = Uint8Array.from(atob(frame.audio), c => c.charCodeAt(0));
-        audioChunks.push(bytes);
+  // 优先直连 (同源或 CORS 允许时)
+  try {
+    const headers = {
+      'X-AUTH-UID': TTS_AUTH.uid,
+      'X-AUTH-TOKEN': TTS_AUTH.token,
+      'Content-Type': 'application/json',
+      'X-Api-Resource-Id': 'seed-tts-2.0'
+    };
+    const body = JSON.stringify({
+      speaker: voiceType,
+      text: text,
+      audio_format: 'mp3',
+      sample_rate: 24000,
+      uid: TTS_AUTH.uid
+    });
+    const resp = await fetch(TTS_API, { method: 'POST', headers, body });
+    if (resp.ok) {
+      const raw = await resp.text();
+      const lines = raw.trim().split('\n');
+      const audioChunks = [];
+      for (const line of lines) {
+        try {
+          const frame = JSON.parse(line);
+          if (frame.audio) {
+            const bytes = Uint8Array.from(atob(frame.audio), c => c.charCodeAt(0));
+            audioChunks.push(bytes);
+          }
+        } catch(e) {}
       }
-    } catch(e) {}
+      if (audioChunks.length > 0) {
+        const totalLen = audioChunks.reduce((s, c) => s + c.length, 0);
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const chunk of audioChunks) { merged.set(chunk, offset); offset += chunk.length; }
+        return new Blob([merged], { type: 'audio/mpeg' });
+      }
+    }
+  } catch(e) {
+    console.log('[TTS] 直连失败，尝试本地代理:', e.message);
   }
-  if (audioChunks.length === 0) throw new Error('No audio data');
-  // 合并所有帧
-  const totalLen = audioChunks.reduce((s, c) => s + c.length, 0);
-  const merged = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const chunk of audioChunks) { merged.set(chunk, offset); offset += chunk.length; }
-  return new Blob([merged], { type: 'audio/mpeg' });
+  // 降级：本地代理 (解决 GitHub Pages CORS)
+  const proxyResp = await fetch('http://localhost:8766/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, speaker: voiceType })
+  });
+  if (!proxyResp.ok) throw new Error('TTS Proxy HTTP ' + proxyResp.status);
+  const data = await proxyResp.json();
+  if (data.error) throw new Error(data.error);
+  const bytes = Uint8Array.from(atob(data.audio), c => c.charCodeAt(0));
+  return new Blob([bytes], { type: 'audio/mpeg' });
 }
 
 async function playNextTTS() {
@@ -1450,7 +1469,17 @@ async function playNextTTS() {
 
   muteMic();
   stopRecognition();
-  // wakeRecognition 已移除，单例识别统一管理（无需额外停止后台检测）
+  if (wakeRecognition) { stopWakeWordDetection(); }
+
+  // ★ 播报超时保护：15s 后强制终止
+  clearTimeout(speakingTimer);
+  speakingTimer = setTimeout(() => {
+    console.warn('[TTS] 播报超时，强制终止');
+    if (ttsAudioEl) { try { ttsAudioEl.pause(); } catch(e) {} }
+    isSpeaking = false; processingVoice = false;
+    resumeRecognition();
+    playNextTTS();
+  }, 15000);
 
   try {
     const voiceKey = state.voicePerson || 'default';
@@ -1461,6 +1490,7 @@ async function playNextTTS() {
     if (!ttsAudioEl) {
       ttsAudioEl = new Audio();
       ttsAudioEl.onended = () => {
+        clearTimeout(speakingTimer);
         lastTTSEndTime = Date.now();
         isSpeaking = false; processingVoice = false;
         URL.revokeObjectURL(ttsAudioEl.src);
@@ -1468,6 +1498,7 @@ async function playNextTTS() {
         playNextTTS();
       };
       ttsAudioEl.onerror = () => {
+        clearTimeout(speakingTimer);
         lastTTSEndTime = Date.now();
         isSpeaking = false; processingVoice = false;
         try { URL.revokeObjectURL(ttsAudioEl.src); } catch(e) {}
@@ -2273,59 +2304,52 @@ if (airOutletModeLabel) {
   });
 }
 
-// ==================== WebSocket ====================
 // ==================== 真实语音识别引擎 (STT + 可视化 + TTS) ====================
-// v6.0 重构：单例识别 + 状态机 + 全面错误恢复
-
-// ---- ASR (智谱 GLM-ASR-2512) ----
-const ASR_API = 'https://open.bigmodel.cn/api/paas/v4/audio/transcriptions';
-let mediaRecorder = null;
-let asrChunks = [];
-let asrRecording = false;
-let asrDetectInterval = null;
-let asrLastSoundTime = 0;
-const ASR_SILENCE_MS = 1500;          // 静音 1.5 秒后自动识别
-
-// ---- 核心状态 ----
 let audioCtx=null, analyser=null, mediaStream=null, audioAnimId=null;
-let smRunning=false;          // 语音助手是否运行中
+let persistentMediaStream = null; // 持久化麦克风流，避免重复弹权限
+let smRunning=false, silenceTimer=null;
 let lastInterimText='';
-let isSpeaking = false;       // TTS 播放中标志
-let processingVoice = false;  // 正在处理语音指令中
-let lastTTSEndTime = 0;
-const TTS_COOLDOWN = 1200;    // TTS 播完后冷却 1.2 秒，防止回声误识别
-let recentTTSReplies = [];    // 最近 TTS 回复缓存，用于回音检测
-const TTS_ECHO_MAX = 5;
-let asrPending = false;       // 防 ASR 重复调用
+let isSpeaking = false; // TTS 播放中标志，阻止识别自己的声音
+let processingVoice = false; // 正在处理语音指令中，防止TTS自触发循环
+let lastTTSEndTime = 0; // TTS 播完的时间戳，用于冷却期判断
+const TTS_COOLDOWN = 1000; // TTS 播完后冷却 1 秒，确保扬声器回声完全消失
+let recentTTSReplies = []; // 最近 TTS 回复文本缓存，用于过滤识别到的 TTS 回音
+const TTS_ECHO_MAX = 5; // 最多缓存几条 TTS 回复用于回音检测
+// ===== 超时管理与重连计数 =====
+let listeningTimer = null;   // 聆听超时 (8s)
+let thinkingTimer = null;    // 思考超时 (5s)
+let speakingTimer = null;    // 播报超时 (15s)
+let reconnectAttempts = 0;   // 讯飞重连计数
+const MAX_RECONNECT = 5;     // 最大重连次数
 
-// ---- 状态机 ----
-// IDLE → WAKE_LISTENING → ACTIVE_LISTENING → PROCESSING → SPEAKING → WAKE_LISTENING
-const VS_IDLE = 'idle';
-const VS_WAKE = 'wake_listening';       // 后台监听唤醒词
-const VS_ACTIVE = 'active_listening';   // 活跃聆听语音指令
-const VS_PROCESSING = 'processing';     // 处理中
-const VS_SPEAKING = 'speaking';         // TTS 播报中
-let voiceState = VS_IDLE;
-let isAwake = false;
-let wakeTimeout = null;
-const WAKE_WORD = '小本';
-const AUTO_SLEEP_DELAY = 30000;         // 30秒无操作自动休眠
-
-// ---- 麦克风硬件级静音：TTS 播放期间切断音频，杜绝回声环路 ----
+// ---- 硬件级麦克风静音：TTS 播放期间彻底切断音频输入，从根本上杜绝回声环路 ----
 function muteMic() {
-  if (mediaStream && mediaStream.active) {
+  // 禁用持久化流的所有音轨，使浏览器不再接收任何麦克风数据
+  if (persistentMediaStream && persistentMediaStream.active) {
+    persistentMediaStream.getTracks().forEach(t => { t.enabled = false; });
+  }
+  if (mediaStream && mediaStream.active && mediaStream !== persistentMediaStream) {
     mediaStream.getTracks().forEach(t => { t.enabled = false; });
   }
   console.log('[MIC] 麦克风已静音（TTS 播放期间）');
 }
 function unmuteMic() {
-  if (mediaStream && mediaStream.active) {
+  // 重新启用音轨，恢复麦克风输入
+  if (persistentMediaStream && persistentMediaStream.active) {
+    persistentMediaStream.getTracks().forEach(t => { t.enabled = true; });
+  }
+  if (mediaStream && mediaStream.active && mediaStream !== persistentMediaStream) {
     mediaStream.getTracks().forEach(t => { t.enabled = true; });
   }
   console.log('[MIC] 麦克风已恢复');
 }
+// 语音唤醒词相关
+let isAwake = false;                  // 是否处于唤醒状态
+let wakeTimeout = null;               // 自动休眠定时器
+let wakeRecognition = null;           // 后台唤醒词检测实例
+const WAKE_WORD = '小本';              // 唤醒词
+const AUTO_SLEEP_DELAY = 30000;       // 30秒无操作自动休眠
 
-// ---- UI 元素 ----
 const micBtn=$('#micBtn'), micRipple=$('#micRipple'), barsCont=$('#audioBars');
 const BAR_N=12;
 if (barsCont) { barsCont.innerHTML=''; for(let i=0;i<BAR_N;i++){ const b=document.createElement('div'); b.className='audio-bar'; b.style.height='0px'; barsCont.appendChild(b); } }
@@ -2334,45 +2358,42 @@ function getBars(){ return barsCont?barsCont.querySelectorAll('.audio-bar'):[]; 
 // ---- 麦克风 + 可视化 ----
 async function startMic() {
   try {
-    // 复用已有流，避免重复弹权限
-    if (mediaStream && mediaStream.active) {
+    // 复用已有的活跃流，避免重复弹权限
+    if (persistentMediaStream && persistentMediaStream.active) {
+      mediaStream = persistentMediaStream;
+      // 重新启用所有轨道
       mediaStream.getTracks().forEach(t => t.enabled = true);
     } else {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
+      mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      persistentMediaStream = mediaStream; // 持久化保存
     }
     // 复用或创建 AudioContext
     if (!audioCtx || audioCtx.state === 'closed') {
       audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      analyser = null;
     }
     if (audioCtx.state === 'suspended') { await audioCtx.resume(); }
-    // 创建分析器（仅用于可视化频谱）
-    if (!analyser && audioCtx.state === 'running') {
+    if (!analyser) {
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.7;
-      const src = audioCtx.createMediaStreamSource(mediaStream);
-      src.connect(analyser);
+      audioCtx.createMediaStreamSource(mediaStream).connect(analyser);
     }
-    // 启动频谱可视化
-    if (analyser) {
-      const data = new Uint8Array(analyser.frequencyBinCount), bars = getBars();
-      function draw() {
-        if (!analyser) return;
-        audioAnimId=requestAnimationFrame(draw);
-        analyser.getByteFrequencyData(data);
-        const step = Math.floor(data.length / BAR_N);
-        for (let i=0; i<BAR_N && i<bars.length; i++) {
-          let sum=0, count=0;
-          for (let j=i*step; j<(i+1)*step && j<data.length; j++) { sum+=data[j]; count++; }
-          const avg = count ? sum/count : 0;
-          bars[i].style.height = Math.max(1, Math.min(30, avg/5))+'px';
-        }
+    const bars = getBars();
+    function draw() {
+      audioAnimId=requestAnimationFrame(draw);
+      if (!analyser || !analyser.context || analyser.context.state === 'closed') return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      const step = Math.floor(data.length / BAR_N);
+      for (let i=0; i<BAR_N && i<bars.length; i++) {
+        let sum=0, count=0;
+        for (let j=i*step; j<(i+1)*step && j<data.length; j++) { sum+=data[j]; count++; }
+        const avg = count ? sum/count : 0;
+        bars[i].style.height = Math.max(1, Math.min(30, avg/5))+'px';
       }
-      draw();
     }
-    return true;
+    draw(); return true;
   } catch(e) {
     console.warn('麦克风未授权:', e.message);
     const warnEl = document.getElementById('httpsWarning');
@@ -2384,199 +2405,421 @@ async function startMic() {
 
 function stopMic() {
   if (audioAnimId) { cancelAnimationFrame(audioAnimId); audioAnimId=null; }
-  if (mediaStream) { mediaStream.getTracks().forEach(t => t.enabled = false); }
+  // 仅禁用轨道而非停止，保留权限不释放硬件（再次启用无需弹窗）
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.enabled = false); mediaStream = null; }
+  // 同时禁用持久化流，防止 TTS 冷却期后 unmuteMic 意外恢复麦克风
+  if (persistentMediaStream && persistentMediaStream.active) {
+    persistentMediaStream.getTracks().forEach(t => t.enabled = false);
+  }
   // 挂起 AudioContext 而非关闭，保持可复用
   if (audioCtx && audioCtx.state === 'running') { audioCtx.suspend().catch(()=>{}); }
   analyser = null;
   getBars().forEach(b=>b.style.height='0px');
 }
 
-// ---- 字符串相似度辅助（回音检测） ----
-function _isSimilarText(a, b) {
-  if (!a || !b) return false;
-  const ca = a.replace(/[，。！？~,\.!?\s]+/g, '');
-  const cb = b.replace(/[，。！？~,\.!?\s]+/g, '');
-  if (ca.length < 2 || cb.length < 2) return false;
-  if (cb.includes(ca) || ca.includes(cb)) return true;
-  let common = 0;
-  const minLen = Math.min(ca.length, cb.length);
-  for (let i = 0; i < minLen; i++) { if (ca[i] === cb[i]) common++; }
-  return (common / Math.max(ca.length, cb.length)) > 0.6;
+// ==================== 讯飞 WebSocket 流式 ASR ====================
+
+// ===== 配置：请在此填入讯飞开放平台应用信息 =====
+// 获取方式: https://console.xfyun.cn/app/myapp → 语音听写（流式版）
+const XUNFEI_APPID     = 'd99c4af6';
+const XUNFEI_API_KEY   = '1f8d94ff30ae4c5504a36f1e5d813adc';
+const XUNFEI_API_SECRET= 'MmJkZjkyNDdmZDcyMzU3NmY3YmY0OTVi';
+const XUNFEI_HOST      = 'iat-api.xfyun.cn';
+
+// ===== 讯飞 WebSocket 状态变量 =====
+let xunfeiWS              = null;   // WebSocket 实例
+let xunfeiSPN             = null;   // ScriptProcessorNode（PCM 采集节点）
+let xunfeiSrcNode         = null;   // MediaStreamAudioSourceNode
+let xunfeiRecording       = false;  // 是否正在发送音频数据
+let xunfeiShouldReconnect = false;  // 是否自动重连
+let xunfeiInterimText     = '';     // 当前中间识别结果
+let xunfeiFinalBuf        = '';     // 最终文本累积缓冲区
+
+// ===== 鉴权：HMAC-SHA256 签名（Web Crypto API） =====
+// ★ Uint8Array → Base64 安全转换（避免 spread 操作符栈溢出）
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
-// ---- 语音识别 (ASR) —— 智谱 GLM-ASR-2512 + MediaRecorder + 静音检测 ----
-async function startRecognition() {
-  if (!mediaStream || !mediaStream.active) {
-    const micOk = await startMic();
-    if (!micOk) return false;
+async function generateXunFeiSignature(apiKey, apiSecret, host) {
+  // ★ 检查 crypto.subtle 是否可用（需要 HTTPS 或 localhost）
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error('Web Crypto API 不可用，请使用 HTTPS 或 localhost 打开此页面');
   }
-  if (asrRecording) { console.log('[ASR] 已在录音中'); return true; }
+  const date = new Date().toUTCString(); // RFC1123 格式
+  const signatureOrigin = `host: ${host}\ndate: ${date}\nGET /v2/iat HTTP/1.1`;
+
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', encoder.encode(apiSecret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sigBytes = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(signatureOrigin));
+  const signature = arrayBufferToBase64(sigBytes);
+
+  // 拼接 authorization 头并 Base64 编码
+  const authorization = `api_key="${apiKey}", algorithm="hmac-sha256", headers="host date request-line", signature="${signature}"`;
+  return {
+    encodedAuth: encodeURIComponent(btoa(authorization)),
+    encodedDate: encodeURIComponent(date),
+    date
+  };
+}
+
+// ===== 建立讯飞 WebSocket 连接 =====
+async function connectXunFeiWS() {
+  if (XUNFEI_APPID === 'YOUR_XUNFEI_APPID') {
+    console.warn('[讯飞ASR] 请先配置 XUNFEI_APPID / XUNFEI_API_KEY / XUNFEI_API_SECRET');
+    toast('请配置讯飞 API 密钥（XUNFEI_APPID）', 'warning');
+    return false;
+  }
   try {
-    asrChunks = [];
-    asrRecording = true;
-    asrLastSoundTime = Date.now();
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-    mediaRecorder = new MediaRecorder(mediaStream, { mimeType });
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) asrChunks.push(e.data); };
-    mediaRecorder.onstop = () => { if (asrRecording) processASR(); };
-    mediaRecorder.start(200);
+    const { encodedAuth, encodedDate } = await generateXunFeiSignature(
+      XUNFEI_API_KEY, XUNFEI_API_SECRET, XUNFEI_HOST
+    );
+    const wsUrl = `wss://${XUNFEI_HOST}/v2/iat?authorization=${encodedAuth}&host=${encodeURIComponent(XUNFEI_HOST)}&date=${encodedDate}`;
 
-    // 音量检测：每200ms采样，无声超1.5秒触发识别
-    if (!audioCtx || audioCtx.state === 'closed') { audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }
-    if (audioCtx.state === 'suspended') { await audioCtx.resume(); }
-    const volAnalyser = audioCtx.createAnalyser();
-    volAnalyser.fftSize = 256;
-    volAnalyser.smoothingTimeConstant = 0.5;
-    const volSrc = audioCtx.createMediaStreamSource(mediaStream);
-    volSrc.connect(volAnalyser);
-    const volData = new Uint8Array(volAnalyser.frequencyBinCount);
+    xunfeiWS = new WebSocket(wsUrl);
 
-    asrDetectInterval = setInterval(() => {
-      if (!asrRecording) return;
-      volAnalyser.getByteFrequencyData(volData);
-      let sum = 0;
-      for (let i = 0; i < volData.length; i++) sum += volData[i];
-      const avg = sum / volData.length;
-      if (avg > 5) { asrLastSoundTime = Date.now(); }
-      const silence = Date.now() - asrLastSoundTime;
-      if (silence >= ASR_SILENCE_MS) {
-        console.log('[ASR] 静音 ' + silence + 'ms，触发识别');
-        stopRecognition();
+    xunfeiWS.onopen = () => {
+      // ★ 如果在连接过程中 stopRecognition() 已被调用，立即关闭
+      if (!xunfeiShouldReconnect) {
+        console.log('[讯飞ASR] 连接已建立但已被取消，立即关闭');
+        try { xunfeiWS.close(1000); } catch(e) {}
+        return;
       }
-    }, 200);
+      console.log('[讯飞ASR] WebSocket 已连接');
+      setCarStatus('聆听中...', 'listening', true);
 
-    console.log('[ASR] MediaRecorder 录音已启动');
+      // ★ VAD 尾端点检测：休眠态 60s，活跃态 15s（减少不必要的断开重连）
+      const vadEos = isAwake ? 15000 : 60000;
+
+      // ★ 发送开始参数帧（status=0：第一帧）
+      const startFrame = {
+        common: { app_id: XUNFEI_APPID },
+        business: {
+          domain: 'iat',
+          language: 'zh_cn',
+          accent: 'mandarin',
+          vad_eos: vadEos,
+          dwa: 'wpgs',          // 动态修正 + 词级流式结果
+          ptt: 1                // 添加标点
+        },
+        data: {
+          status: 0,
+          format: 'audio/L16;rate=16000;channel=1',
+          encoding: 'raw'
+        }
+      };
+      xunfeiWS.send(JSON.stringify(startFrame));
+
+      xunfeiRecording = true;
+      xunfeiFinalBuf = '';
+      xunfeiInterimText = '';
+
+      // 如果麦克风流已就绪，立即启动 PCM 音频采集
+      if (audioCtx && mediaStream) {
+        startPCMCapture();
+      }
+    };
+
+    xunfeiWS.onmessage = (event) => {
+      try {
+        const resp = JSON.parse(event.data);
+
+        // 错误码处理
+        if (resp.code !== 0) {
+          console.error('[讯飞ASR] 服务端错误:', resp.code, resp.message);
+          if (resp.code === 11200 || resp.code === 11201) {
+            toast('讯飞授权失败，请检查 API 密钥', 'error');
+          }
+          return;
+        }
+
+        const result = resp.data && resp.data.result;
+        if (!result) return;
+
+        // ★ 拼接词级结果（ws 字段：word-segment 流式结果）
+        let text = '';
+        if (result.ws) {
+          for (const w of result.ws) {
+            if (w.cw) for (const c of w.cw) { if (c.w) text += c.w; }
+          }
+        }
+
+        // ★ 累积所有文本（中间+最终），因为讯飞将文字放在中间帧、标点放在最终帧
+        if (text) {
+          xunfeiFinalBuf += text;
+          xunfeiInterimText = xunfeiFinalBuf;
+          const inp = document.getElementById('navInputHome');
+          if (inp) { inp.value = xunfeiFinalBuf; }
+          setCarStatus('聆听中: ' + xunfeiFinalBuf, 'listening', true);
+        }
+
+        // 检查是否为最终结果（pgs === 'apd' 或 ls === true 表示一句话结束）
+        const isEnd = result.pgs === 'apd' || result.ls === true;
+        console.log('[讯飞ASR] result:', JSON.stringify({ sn: result.sn, ls: result.ls, pgs: result.pgs, ed: result.ed, textLen: text.length, isEnd: isEnd, bufLen: xunfeiFinalBuf.length }));
+
+        if (isEnd) {
+          const finalText = xunfeiFinalBuf.trim();
+
+          console.log('[讯飞ASR] 识别完成:', finalText, '| shouldReconnect:', xunfeiShouldReconnect, '| isAwake:', isAwake, '| processingVoice:', processingVoice);
+
+          if (finalText && finalText.length >= 1 && xunfeiShouldReconnect) {
+            // ★ 休眠态：只检测唤醒词，不处理正常指令
+            if (!isAwake) {
+              if (finalText.includes(WAKE_WORD)) {
+                console.log('[讯飞ASR] 休眠中检测到唤醒词:', finalText);
+                startVoiceInput();
+              }
+              xunfeiFinalBuf = '';
+              xunfeiInterimText = '';
+              return;
+            }
+
+            // 噪音过滤
+            if (finalText.length < 2) {
+              console.log('[讯飞ASR] 文本过短忽略:', finalText);
+            } else {
+              // ★ 回音过滤：识别结果与最近 TTS 回复高度相似则丢弃
+              const isEcho = recentTTSReplies.some(reply => {
+                if (finalText.length < 5) return false;
+                const shortReply = reply.replace(/[，。！？~,.!?\s]+/g, '').slice(0, Math.min(reply.length, finalText.length + 2));
+                const shortText = finalText.replace(/[，。！？~,.!?\s]+/g, '');
+                if (shortReply.length > 0 && shortText.length > 0) {
+                  const ratio = (shortReply.includes(shortText) || shortText.includes(shortReply))
+                    ? Math.min(shortText.length, shortReply.length) / Math.max(shortText.length, shortReply.length)
+                    : 0;
+                  if (ratio > 0.4) { console.log('[讯飞ASR] TTS回音忽略:', finalText); return true; }
+                }
+                return false;
+              });
+
+              // 防重入
+              if (!isEcho && !processingVoice) {
+                console.log('[讯飞ASR] ✅ 调用 processRecognizedText:', finalText);
+                processRecognizedText(finalText);
+              } else {
+                console.log('[讯飞ASR] ⚠ 跳过处理: isEcho=', isEcho, 'processingVoice=', processingVoice);
+              }
+            }
+          }
+
+          // 清理缓冲区，准备下一句
+          xunfeiFinalBuf = '';
+          xunfeiInterimText = '';
+        }
+      } catch(e) {
+        console.warn('[讯飞ASR] 消息解析失败:', e.message);
+      }
+    };
+
+    xunfeiWS.onerror = () => {
+      console.warn('[讯飞ASR] WebSocket 错误');
+      cleanupPCMCapture();
+      xunfeiRecording = false;
+      xunfeiWS = null; // ★ 立即清引用，避免残留阻止唤醒词重启
+    };
+
+    xunfeiWS.onclose = (ev) => {
+      console.log('[讯飞ASR] WebSocket 已关闭, code:', ev.code);
+      xunfeiWS = null;
+      cleanupPCMCapture();
+      xunfeiRecording = false;
+
+      // ★ 自动重连：仅活跃态 + 非主动关闭时重连，最多 5 次
+      if (xunfeiShouldReconnect && smRunning && isAwake && !isSpeaking && !processingVoice) {
+        reconnectAttempts++;
+        if (reconnectAttempts > MAX_RECONNECT) {
+          console.warn('[讯飞ASR] 重连次数超限 (' + MAX_RECONNECT + ')，放弃重连');
+          setVoiceState('idle', '语音服务异常，请稍后重试');
+          smRunning = false; isAwake = false;
+          startWakeWordDetection();
+          return;
+        }
+        console.log('[讯飞ASR] 3s 后自动重连（第 ' + reconnectAttempts + '/' + MAX_RECONNECT + ' 次）...');
+        setVoiceState('thinking', '重连中（' + reconnectAttempts + '/' + MAX_RECONNECT + '）...');
+        setTimeout(() => {
+          if (xunfeiShouldReconnect && smRunning && isAwake && !isSpeaking && !processingVoice && !xunfeiWS) {
+            connectXunFeiWS();
+          }
+        }, 3000);
+      } else if (!isAwake || !smRunning) {
+        // ★ 非活跃态：启动浏览器唤醒词检测
+        startWakeWordDetection();
+      }
+    };
+
     return true;
-  } catch (e) {
-    console.warn('[ASR] 启动失败:', e.message);
-    stopRecognition();
+  } catch(e) {
+    console.error('[讯飞ASR] 连接失败:', e.message);
+    // ★ 显示具体错误到 UI，方便用户排查
+    if (e.message.includes('crypto') || e.message.includes('Crypto')) {
+      toast('❌ 需要 HTTPS/localhost 才能使用讯飞识别', 'error');
+      setCarStatus('需要 HTTPS 或 localhost', 'danger');
+    } else {
+      toast('讯飞连接失败: ' + e.message, 'error');
+      setCarStatus('讯飞连接失败', 'danger');
+    }
     return false;
   }
 }
 
-function stopRecognition() {
-  if (asrDetectInterval) { clearInterval(asrDetectInterval); asrDetectInterval = null; }
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    try { mediaRecorder.stop(); } catch (e) {}
-  }
-  asrRecording = false;
-}
-
-function destroyRecognition() {
-  stopRecognition();
-  mediaRecorder = null;
-  asrChunks = [];
-}
-
-async function processASR() {
-  if (!asrChunks.length || asrPending) return;
-  if (isSpeaking || processingVoice) { asrChunks = []; return; }
-  if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) { asrChunks = []; return; }
-
-  asrPending = true;
-  const blob = new Blob(asrChunks, { type: mediaRecorder.mimeType });
-  asrChunks = [];
+// ===== PCM 音频采集（16000 Hz, 16-bit signed int, mono） =====
+function startPCMCapture() {
+  if (!audioCtx || !mediaStream || !xunfeiWS || xunfeiWS.readyState !== WebSocket.OPEN) return;
+  if (xunfeiSPN) return; // 已在采集中，避免重复创建
 
   try {
-    const fd = new FormData();
-    fd.append('file', blob, 'audio.webm');
-    fd.append('model', 'glm-asr-2512');
-    fd.append('language', 'zh');
+    xunfeiSrcNode = audioCtx.createMediaStreamSource(mediaStream);
+    // bufferSize=4096: 在 16kHz 下 ≈ 256ms 延迟，平衡延迟与性能
+    xunfeiSPN = audioCtx.createScriptProcessor(4096, 1, 1);
 
-    const resp = await fetch(ASR_API, {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + GLM_API_KEY },
-      body: fd
-    });
-    const data = await resp.json();
-    console.log('[ASR] API 响应:', data);
+    xunfeiSPN.onaudioprocess = (event) => {
+      if (!xunfeiRecording) return;
+      if (!xunfeiWS || xunfeiWS.readyState !== WebSocket.OPEN) return;
+      // ★ TTS 播放期间不发送音频数据（即使麦克风未静音）
+      if (isSpeaking) return;
 
-    const text = (data.text || '').trim();
-    if (!text || text.length < 2) { console.log('[ASR] 文本过短忽略:', text); asrPending = false; return; }
+      const inputData = event.inputBuffer.getChannelData(0);
+      const inputRate = audioCtx.sampleRate;
+      const targetRate = 16000;
 
-    // 回音过滤
-    const isEcho = recentTTSReplies.some(reply => _isSimilarText(text, reply));
-    if (isEcho) { console.log('[ASR] TTS回音忽略:', text.slice(0, 30)); asrPending = false; return; }
-
-    // ===== 休眠态：只检测唤醒词 =====
-    if (!isAwake) {
-      if (text.toLowerCase().includes(WAKE_WORD)) {
-        console.log('[唤醒] 检测到唤醒词:', text);
-        asrPending = false;
-        wakeUpAssistant();
-        return;
+      // 线性下采样到 16kHz（若 AudioContext 采样率不同）
+      let samples;
+      if (inputRate === targetRate) {
+        samples = inputData;
+      } else {
+        const ratio = inputRate / targetRate;
+        const newLen = Math.floor(inputData.length / ratio);
+        const ds = new Float32Array(newLen);
+        for (let i = 0; i < newLen; i++) ds[i] = inputData[Math.floor(i * ratio)];
+        samples = ds;
       }
-      // 未检测到唤醒词，重新开始监听
-      asrPending = false;
-      startRecognition();
-      return;
+
+      // Float32 (-1~1) → Int16 PCM (little-endian)
+      const buf = new ArrayBuffer(samples.length * 2);
+      const view = new DataView(buf);
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+
+      // ★ PCM 数据以 JSON + base64 文本帧发送（讯飞要求所有帧为 JSON 格式）
+      if (xunfeiWS && xunfeiWS.readyState === WebSocket.OPEN) {
+        const audioBase64 = arrayBufferToBase64(buf);
+        const audioFrame = JSON.stringify({
+          data: {
+            status: 1,
+            format: 'audio/L16;rate=16000;channel=1',
+            encoding: 'raw',
+            audio: audioBase64
+          }
+        });
+        try { xunfeiWS.send(audioFrame); } catch(e) {}
+      }
+    };
+
+    // 连接音频图：source → scriptProcessor → destination（必须连 destination 才会触发回调）
+    xunfeiSrcNode.connect(xunfeiSPN);
+    xunfeiSPN.connect(audioCtx.destination);
+
+    console.log('[讯飞ASR] PCM 采集已启动 (sampleRate=' + audioCtx.sampleRate + ')');
+  } catch(e) {
+    console.error('[讯飞ASR] PCM 采集失败:', e.message);
+  }
+}
+
+// 清理 PCM 采集节点（WebSocket 断开或停止识别时调用）
+function cleanupPCMCapture() {
+  if (xunfeiSPN) {
+    try { xunfeiSPN.disconnect(); } catch(e) {}
+    xunfeiSPN = null;
+  }
+  if (xunfeiSrcNode) {
+    try { xunfeiSrcNode.disconnect(); } catch(e) {}
+    xunfeiSrcNode = null;
+  }
+}
+
+// ===== 语音识别控制（替换原有浏览器 SpeechRecognition） =====
+function startRecognition() {
+  xunfeiShouldReconnect = true;
+  reconnectAttempts = 0; // ★ 重置重连计数
+
+  // 已连接且正在录音则无需操作
+  if (xunfeiWS && xunfeiWS.readyState === WebSocket.OPEN && xunfeiRecording) return true;
+
+  // 异步建立 WebSocket 连接（onopen 中自动启动 PCM 采集）
+  if (!xunfeiWS || xunfeiWS.readyState !== WebSocket.OPEN) {
+    connectXunFeiWS();
+  } else if (!xunfeiRecording) {
+    // WebSocket 已连接但采集未启动（如 resumeRecognition 场景）
+    startPCMCapture();
+  }
+  return true;
+}
+
+function stopRecognition() {
+  clearTimeout(silenceTimer);
+  xunfeiShouldReconnect = false;
+
+  // ★ 保存引用后立即置 null，避免残留的 xunfeiWS 阻止唤醒词检测重启
+  const ws = xunfeiWS;
+  xunfeiWS = null;
+
+  // 发送结束帧（status=2），通知服务端音频已发送完毕
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { ws.send(JSON.stringify({ data: { status: 2 } })); } catch(e) {}
+  }
+
+  // 停止 PCM 采集，不再发送音频
+  cleanupPCMCapture();
+  xunfeiRecording = false;
+
+  // 延迟关闭 WebSocket，给服务端时间返回最终结果
+  setTimeout(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.close(1000); } catch(e) {}
     }
+  }, 800);
+}
 
-    // ===== 活跃态：正常语音指令处理 =====
-    if (processingVoice) { asrPending = false; return; }
-    processingVoice = true;
-    voiceState = VS_PROCESSING;
-    setCarStatus('"' + text + '"', 'thinking');
-    processRecognizedText(text);
-    asrPending = false;
-  } catch (e) {
-    console.error('[ASR] 识别失败:', e.message);
-    asrPending = false;
+function stopRecognitionHard() {
+  xunfeiShouldReconnect = false;
+  cleanupPCMCapture();
+  xunfeiRecording = false;
+  if (xunfeiWS) {
+    try { xunfeiWS.close(1000); } catch(e) {}
+    xunfeiWS = null;
   }
 }
 
-// ---- 语音助手生命周期 ----
-async function wakeUpAssistant() {
-  if (isAwake) return;
-  if (isSpeaking || processingVoice) {
-    console.log('[唤醒] TTS播放中，延迟唤醒');
-    return;
-  }
-  console.log('[唤醒] 助手被唤醒');
-
-  // 确保麦克风和识别就绪
-  if (!mediaStream || !mediaStream.active) {
-    const ok = await startMic();
-    if (!ok) return;
-  }
-  unmuteMic();
-  const ok = await startRecognition();
-  if (!ok) return;
-
-  isAwake = true;
-  smRunning = true;
-  voiceState = VS_ACTIVE;
-  setCarStatus('正在聆听...', 'listening');
-  if (micBtn) micBtn.classList.add('listening');
-  if (micRipple) micRipple.classList.add('active');
-  resetWakeTimer();
-  toast('语音助手已唤醒，请说话...', 'info');
-}
-
-function sleepAssistant() {
-  if (!isAwake) return;
-  console.log('[唤醒] 助手进入休眠');
-  isAwake = false;
-  voiceState = smRunning ? VS_WAKE : VS_IDLE;
-  clearTimeout(wakeTimeout);
-  if (micBtn) micBtn.classList.remove('listening');
-  if (micRipple) micRipple.classList.remove('active');
-  setIdleState();
-  toast('语音助手已休眠，说"小本"重新唤醒', 'info');
-}
-
-function resetWakeTimer() {
-  clearTimeout(wakeTimeout);
-  if (isAwake) {
-    wakeTimeout = setTimeout(() => {
-      console.log('[唤醒] 长时间无操作，自动休眠');
-      sleepAssistant();
-    }, AUTO_SLEEP_DELAY);
-  }
+// 恢复语音识别（TTS 播放完毕后调用，带冷却延迟）
+// ★ 先取消麦克风静音，等待冷却期过后重新连接并开始识别
+function resumeRecognition() {
+  setTimeout(() => {
+    if (!isSpeaking && !processingVoice) {
+      unmuteMic();
+      // ★ 如果处于活跃态：重新连接讯飞 WebSocket
+      if (!xunfeiWS || xunfeiWS.readyState !== WebSocket.OPEN) {
+        startRecognition();
+      } else if (!xunfeiRecording) {
+        startPCMCapture();
+      }
+    }
+  }, TTS_COOLDOWN);
 }
 
 function resetSilenceTimer() {
-  // ASR 使用音量检测自动触发，无需人工超时
+  // 不再自动超时关闭——WebSocket 保持长连接，持续流式识别
+  // 用户说"退下"或"关闭语音"时才手动停止
+  clearTimeout(silenceTimer);
 }
 
 // ---- 统一输入处理 (语音/对话共用) ----
@@ -2620,7 +2863,7 @@ async function handleUserInput(text, source) {
       chatMessages.appendChild(msg);
       chatMessages.scrollTop = chatMessages.scrollHeight;
     }
-    if (source === 'voice') { state.voiceStatus='speaking'; setCarStatus(localReply,'speaking'); }
+    if (source === 'voice') { setVoiceState('speaking', localReply); }
     toast(localReply, 'info'); speakText(localReply);
     if (source === 'voice') waitForTTS(() => { if (smRunning) setIdleState(); });
     return localReply;
@@ -2628,7 +2871,7 @@ async function handleUserInput(text, source) {
 
   // 第三步：纯对话/闲聊 —— 交给 AI 生成回复
   if (hasApiKey()) {
-    if (source === 'voice') { state.voiceStatus='thinking'; setCarStatus('AI 思考中...','thinking'); }
+    if (source === 'voice') { setVoiceState('thinking', 'AI 思考中...'); }
 
     const aiReply = await getGLMResponse(text);
     if (aiReply) {
@@ -2639,7 +2882,7 @@ async function handleUserInput(text, source) {
         chatMessages.appendChild(msg);
         chatMessages.scrollTop = chatMessages.scrollHeight;
       }
-      if (source === 'voice') { state.voiceStatus='speaking'; setCarStatus(aiReply,'speaking'); }
+      if (source === 'voice') { setVoiceState('speaking', aiReply); }
       toast(aiReply, 'info'); speakText(aiReply);
       if (source === 'voice') waitForTTS(() => { if (smRunning) setIdleState(); });
       return aiReply;
@@ -2655,147 +2898,252 @@ async function handleUserInput(text, source) {
     chatMessages.appendChild(msg);
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
-  if (source === 'voice') { state.voiceStatus='speaking'; setCarStatus(fallback,'speaking'); speakText(fallback); }
+  if (source === 'voice') { setVoiceState('speaking', fallback); speakText(fallback); }
   if (source === 'voice') waitForTTS(() => { if (smRunning) setIdleState(); });
   return fallback;
 }
 
-// ---- 语音识别结果处理 (async 包装，错误隔离) ----
+// ---- 语音识别结果处理（带超时兜底 + try/finally 防卡死）----
 function processRecognizedText(text) {
+  console.log('[STT→NLP] 转发识别文本到 handleUserInput:', text);
+  setVoiceState('thinking', 'AI 思考中...');
+  processingVoice = true;
+
   handleUserInput(text, 'voice')
-    .then(() => {
-      resetWakeTimer();
-      // 安全兜底：如果 TTS 未能正常重置 processingVoice（例如 handleUserInput 提前返回），
-      // 3 秒后强制恢复，防止语音识别永久卡死
-      setTimeout(() => {
-        if (processingVoice && !isSpeaking) {
-          console.warn('[STT] processingVoice 超时未重置，强制恢复');
-          processingVoice = false;
-          setIdleState();
-        }
-      }, 3000);
+    .then(() => resetWakeTimer())
+    .catch(err => {
+      console.error('[STT→NLP] 处理失败:', err);
+      processingVoice = false; // ★ 异常时强制重置，防止僵尸标志
+      speakText('抱歉，处理出错了，请再说一遍');
+      setVoiceState('wake', '处理出错，请重试');
     })
-    .catch(e => {
-      console.error('[STT] 处理语音输入异常:', e);
-      processingVoice = false;
-      resetWakeTimer();
-      setIdleState();
+    .finally(() => {
+      finishInteraction();
     });
 }
 
-// ---- TTS 等待（轮询检查直到 TTS 播放完毕） ----
 function waitForTTS(cb, timeoutMs=15000) {
   let elapsed = 0;
-  let resolved = false;
   const check = () => {
-    if (resolved) return;
     const synth = window.speechSynthesis;
     const stillPlaying = (synth && synth.speaking) || isSpeaking;
     elapsed += 100;
     if (elapsed > timeoutMs) {
-      resolved = true;
-      console.warn('[TTS] 等待超时，强制重置');
+      // 超时兜底：强制重置状态
       isSpeaking = false; processingVoice = false;
       if (synth) { try { synth.cancel(); } catch(e) {} }
-      setTimeout(cb, 50);
+      setTimeout(cb, 100);
       return;
     }
-    if (stillPlaying) { setTimeout(check, 100); } else { resolved = true; setTimeout(cb, 50); }
+    if (stillPlaying) { setTimeout(check, 100); } else { setTimeout(cb, 100); }
   };
   setTimeout(check, 150);
 }
 
-// ---- 恢复语音识别（TTS 播放完毕后调用，带冷却延迟） ----
-function resumeRecognition() {
-  const delay = TTS_COOLDOWN;
-  setTimeout(() => {
-    if (!isSpeaking && !processingVoice) {
-      unmuteMic();
-      if (smRunning) { startRecognition(); }
-      if (!isAwake && smRunning) { voiceState = VS_WAKE; }
-    }
-  }, delay);
-}
-
 function setIdleState() {
-  const statusText = isAwake ? '正在聆听...' : '待命中（说"小本"唤醒）...';
-  voiceState = isAwake ? VS_ACTIVE : (smRunning ? VS_WAKE : VS_IDLE);
-  setCarStatus(statusText, 'idle', false);
-  if (micBtn) micBtn.classList.remove('listening');
-  if (micRipple) micRipple.classList.remove('active');
+  setVoiceState('idle', '待命中（说"小本"唤醒）...');
 }
 
 // ---- 语音输入控制 ----
-async function startVoiceInput() {
-  if (smRunning && isAwake) return; // 已在活跃状态
 
-  // 防止 TTS 播放期间手动唤醒导致回声环路
+// 后台唤醒词检测（独立 Recognition 实例，持续监听"小本"）
+function startWakeWordDetection() {
+  // ★ 清理已死的旧实例（no-speech 等错误后实例虽然非 null 但已停止）
+  if (wakeRecognition) {
+    try { wakeRecognition.stop(); } catch(e) {}
+    wakeRecognition = null;
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  try {
+    wakeRecognition = new SR();
+    wakeRecognition.lang = 'zh-CN';
+    wakeRecognition.continuous = true;
+    wakeRecognition.interimResults = true;
+    wakeRecognition.maxAlternatives = 1;
+    wakeRecognition.onresult = (event) => {
+      // TTS 播放期间忽略识别结果
+      if (isSpeaking || processingVoice) return;
+      if (lastTTSEndTime > 0 && Date.now() - lastTTSEndTime < TTS_COOLDOWN) return;
+      let text = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const r = event.results[i];
+        // ★ 中间结果和最终结果都检查，提高唤醒灵敏度
+        text += r[0].transcript;
+      }
+      if (text.length < 2) return;
+      if (text.includes(WAKE_WORD)) {
+        console.log('[唤醒] ✅ 检测到唤醒词:', text);
+        stopWakeWordDetection();
+        startVoiceInput();
+      }
+    };
+    wakeRecognition.onerror = (event) => {
+      console.warn('[唤醒STT] 错误:', event.error);
+      if (event.error === 'not-allowed') { wakeRecognition = null; return; }
+      // 其他错误不销毁，等 onend 重试
+    };
+    wakeRecognition.onend = () => {
+      // ★ 永不自杀，持续重试
+      if (!wakeRecognition || isSpeaking || processingVoice) return;
+      if (isAwake || smRunning || xunfeiWS) return;
+      setTimeout(() => {
+        if (wakeRecognition && !isAwake && !smRunning && !xunfeiWS && !isSpeaking && !processingVoice) {
+          try { wakeRecognition.start(); } catch(e) { wakeRecognition = null; }
+        }
+      }, 600);
+    };
+    wakeRecognition.start();
+    console.log('[唤醒] 后台唤醒词检测已启动，说"小本"唤醒');
+  } catch(e) { console.warn('[唤醒] 启动失败:', e.message); wakeRecognition = null; }
+}
+
+function stopWakeWordDetection() {
+  if (wakeRecognition) {
+    try { wakeRecognition.stop(); } catch(e) {}
+    // 保留实例复用
+  }
+}
+
+// 重置自动休眠计时器
+function resetWakeTimer() {
+  clearTimeout(wakeTimeout);
+  if (isAwake) {
+    wakeTimeout = setTimeout(() => {
+      console.log('[唤醒] 长时间无操作，自动休眠');
+      isAwake = false;
+      // ★ 休眠时立即关闭讯飞 WebSocket（省配额），切换到浏览器唤醒词检测
+      stopRecognitionHard();
+      smRunning = false;
+      if (micBtn) micBtn.classList.remove('listening');
+      if (micRipple) micRipple.classList.remove('active');
+      setIdleState();
+      startWakeWordDetection();
+      toast('语音助手已休眠，说"小本"重新唤醒', 'info');
+    }, AUTO_SLEEP_DELAY);
+  }
+}
+
+async function startVoiceInput() {
+  if (smRunning) return;
+  // ★ 防止 TTS 播放期间手动唤醒导致回声环路
   if (isSpeaking || processingVoice) {
     toast('助手正在说话，请稍候...', 'warning');
     return;
   }
-
-  // 确保麦克风未静音
-  if (!mediaStream || !mediaStream.active) {
-    const ok = await startMic();
-    if (!ok) { smRunning = false; return; }
-  }
+  // ★ 确保浏览器唤醒词检测已停止，避免与讯飞 WebSocket 冲突
+  stopWakeWordDetection();
+  // 确保麦克风未静音（TTS 播放期间会被静音）
   unmuteMic();
   isSpeaking = false;
   processingVoice = false;
-
-  const ok = await startRecognition();
-  if (!ok) { stopMic(); smRunning = false; return; }
-
   isAwake = true;
   smRunning = true;
-  voiceState = VS_ACTIVE;
-  lastInterimText = '';
-  setCarStatus('正在聆听...', 'listening');
-  if (micBtn) micBtn.classList.add('listening');
-  if (micRipple) micRipple.classList.add('active');
-  resetWakeTimer();
+  const ok = await startMic(); if (!ok) { smRunning = false; isAwake = false; return; }
+  const recOk = startRecognition(); if (!recOk) { stopMic(); smRunning = false; isAwake = false; return; }
+  lastInterimText='';
+  setVoiceState('listening', '正在聆听...');
+  resetSilenceTimer();
 }
 
 function stopVoiceInput() {
-  stopRecognition();
-  stopMic();
-  clearTimeout(wakeTimeout);
-  smRunning = false;
-  isAwake = false;
-  voiceState = VS_IDLE;
-  lastInterimText = '';
-  setIdleState();
+  stopRecognition(); stopMic(); clearTimeout(silenceTimer);
+  smRunning=false; lastInterimText=''; setIdleState();
+  // 非休眠退出时重启后台唤醒检测
+  if (isAwake) {
+    resetWakeTimer();
+  } else {
+    startWakeWordDetection();
+  }
 }
 
 function toggleVoiceInput(e) {
-  if (e) e.preventDefault();
-  if (smRunning && isAwake) {
-    // 活跃状态 → 休眠
-    sleepAssistant();
-  } else if (smRunning && !isAwake) {
-    // 休眠状态 → 唤醒
-    wakeUpAssistant();
+  e.preventDefault();
+  if (smRunning) {
+    stopVoiceInput(); toast('语音助手已关闭', 'info');
+    isAwake = false; clearTimeout(wakeTimeout);
+    startWakeWordDetection();
+    setCarStatus('待命中（说"小本"唤醒）...', 'idle', false);
   } else {
-    // 完全关闭 → 启动
-    startVoiceInput().catch(e => {
-      console.error('[Voice] 启动异常:', e);
-      smRunning = false;
-      isAwake = false;
-      setIdleState();
-    });
+    isAwake = true;
+    stopWakeWordDetection();
+    startVoiceInput();
   }
 }
 
 if (micBtn) { micBtn.addEventListener('pointerdown', toggleVoiceInput); }
 
-// ---- 无唤醒词的后台检测已移除（单例识别统一处理），保留空函数兼容旧调用 ----
-// 所有唤醒逻辑由 recognition.onresult 中的状态机统一处理
+// ===== 原子化状态切换（五态机：idle | wake | listening | thinking | speaking）=====
+function setVoiceState(newState, statusText) {
+  // 1. 清除前一个状态的超时定时器
+  clearAllTimeouts();
+  // 2. 更新状态变量
+  state.voiceStatus = newState;
+  // 3. UI: 底部状态栏文字
+  const st = $('#carstatusStatus'), ov = $('#carstatusOverlay');
+  if (st) { st.textContent = statusText; st.classList.toggle('active', newState !== 'idle'); }
+  // 4. UI: 光晕 class
+  if (ov) ov.className = 'carstatus-overlay ' + newState;
+  // 5. UI: 3D 光晕颜色
+  update3D_Glow(newState);
+  // 6. UI: 麦克风按钮
+  if (micBtn) micBtn.classList.toggle('listening', newState === 'listening');
+  if (micRipple) micRipple.classList.toggle('active', newState === 'listening');
+  // 7. 启动新状态的超时
+  if (newState === 'listening') startListeningTimeout();
+  if (newState === 'thinking') startThinkingTimeout();
+}
+
+function clearAllTimeouts() {
+  clearTimeout(listeningTimer); listeningTimer = null;
+  clearTimeout(thinkingTimer); thinkingTimer = null;
+  clearTimeout(speakingTimer); speakingTimer = null;
+}
+
+function startListeningTimeout() {
+  listeningTimer = setTimeout(() => {
+    if (state.voiceStatus === 'listening') {
+      setVoiceState('wake', '没有听到声音，请再说一遍');
+    }
+  }, 8000);
+}
+
+function startThinkingTimeout() {
+  thinkingTimer = setTimeout(() => {
+    if (state.voiceStatus === 'thinking') {
+      speakText('网络好像不太顺畅，请稍后再试');
+      setVoiceState('wake', '网络不太顺畅，请稍后再试');
+      finishInteraction();
+    }
+  }, 5000);
+}
+
+function finishInteraction() {
+  // ★ 只清理超时，不碰 processingVoice
+  // processingVoice 由 TTS 回调（playNextTTS/fallbackBrowserTTS/waitForTTS）负责重置
+  clearAllTimeouts();
+  // 如果不在播放且不在处理，回到聆听态
+  if (!isSpeaking && !processingVoice && smRunning && isAwake) {
+    setVoiceState('listening', '正在聆听...');
+  }
+}
+
+function resetVoiceSystem() {
+  clearAllTimeouts();
+  processingVoice = false;
+  isSpeaking = false;
+  stopRecognitionHard();
+  stopWakeWordDetection();
+  reconnectAttempts = 0;
+  setVoiceState('idle', '待命中（说"小本"唤醒）...');
+  smRunning = false;
+  isAwake = false;
+  startWakeWordDetection();
+}
+
+// 保留旧接口兼容，内部委托给 setVoiceState
 function setCarStatus(text, glow, active=true) {
-  const st=$('#carstatusStatus'), ov=$('#carstatusOverlay');
-  if (st){st.textContent=text;st.classList.toggle('active',active);}
-  if (ov)ov.className='carstatus-overlay '+glow;
-  update3D_Glow(glow);
+  setVoiceState(glow, text);
 }
 
 function executeAction(textInput) {
@@ -3333,7 +3681,7 @@ function update3D_Lights() {
     });
   }
 }
-const _glowColors = { idle:0x00D4FF, listening:0x00D4FF, thinking:0xFFD93D, speaking:0x00D4FF, executing:0x6BCB77 };
+const _glowColors = { idle:0x00D4FF, wake:0x00D4FF, listening:0x00D4FF, thinking:0xFFD93D, speaking:0x00D4FF, executing:0x6BCB77, danger:0xFF6B6B };
 function update3D_Glow(status) {
   if (!car3D) return;
   if (car3D.P.glowRing) { car3D.P.glowRing.material.color.set(_glowColors[status]||0x00D4FF); car3D.P.glowRing.material.opacity = status==='idle'?0:0.45; }
@@ -4415,7 +4763,7 @@ function parseVoiceCommand(raw) {
 
   // ===== 唤醒词响应 =====
   if (has('小本')) {
-    if (!isAwake) { wakeUpAssistant(); }
+    if (!isAwake) { isAwake = true; stopWakeWordDetection(); resetWakeTimer(); setCarStatus('正在聆听...','listening'); }
     return '我在！有什么可以帮您的？';
   }
   // ===== 15. 帮助/身份 =====
@@ -5238,38 +5586,24 @@ initFloatPanels();
 init();
 initApiKeyUI();
 initPanelChat();
-
-// ===== v6.0 语音助手初始化：智谱 GLM-ASR-2512 + MediaRecorder + 静音检测 =====
-// 点击麦克风按钮开始语音，说"小本"唤醒
-(async function initVoiceAssistant() {
-  try {
-    const micOk = await startMic();
-    if (!micOk) {
-      console.warn('[Voice] 麦克风初始化失败，语音功能不可用');
-      setCarStatus('麦克风未授权，语音功能不可用', 'idle', false);
-      return;
-    }
-    // 进入休眠监听唤醒词状态
-    const recOk = await startRecognition();
-    if (!recOk) {
-      console.warn('[Voice] 语音识别启动失败');
-      setCarStatus('语音识别启动失败', 'idle', false);
-      return;
-    }
-    isAwake = false;
-    smRunning = true;
-    voiceState = VS_WAKE;
-    setCarStatus('待命中（说"小本"唤醒）...', 'idle', false);
-    console.log('[Voice] v6.0 语音助手已就绪 — 说"小本"唤醒');
-  } catch (e) {
-    console.error('[Voice] 初始化异常:', e);
-    setCarStatus('语音初始化失败，请刷新重试', 'idle', false);
+// 启动后台唤醒词检测 + 麦克风可视化
+// ★ Chrome SpeechRecognition 依赖 Google STT（国内被墙），改用讯飞 WebSocket 做唤醒检测
+isAwake = false;
+xunfeiShouldReconnect = true;  // 允许自动重连
+startMic().then(ok => {
+  if (!ok) {
+    setCarStatus('麦克风未授权', 'idle', false);
+    return;
   }
-})();
+  // 启动讯飞 WebSocket（非活跃态下只检测唤醒词，不处理指令）
+  startRecognition();
+  setCarStatus('说"小本"唤醒', 'idle', false);
+  console.log('[Voice] 讯飞唤醒词检测已启动，说"小本"唤醒');
+});
 
-console.log(' 智能车载语音助手 v6.0 已就绪');
+console.log(' 智能车载语音助手 v5.11 已就绪 (讯飞ASR唤醒+识别)');
 console.log('  菜单: 首页|导航|仪表盘|车控|车况(3D)|娱乐|设置');
-console.log('  v6.0: 单例识别引擎 | 状态机驱动 | 防崩溃 | 防回声环路');
+console.log('  v5.11: 讯飞ASR全时唤醒+识别 | 休眠态自动重连 | 说"小本"唤醒');
 </script>
 
 <!-- ==================== 浮动对话面板 (右下角) ==================== -->
